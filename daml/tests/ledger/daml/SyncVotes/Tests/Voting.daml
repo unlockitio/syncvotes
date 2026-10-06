@@ -4,6 +4,7 @@ module SyncVotes.Tests.Voting where
 
 import Daml.Script
 import DA.Time (addRelTime, days)
+import SyncVotes.Account
 import SyncVotes.Governance
 import SyncVotes.Tests.Fixtures
 import SyncVotes.Types
@@ -55,6 +56,78 @@ bothBallotsCount = script do
   -- A second count of either marked ballot reaches its own guard, not a settled-proposal guard.
   refuses f.provider "Already counted" do exerciseCmd oldId Ballot_Count with proposal = interim
   refuses f.provider "Already counted" do exerciseCmd modernId BallotV2_Count with proposal = otherInterim
+
+-- | Tallying separate batches advances the same proposal without losing earlier counts. A
+-- provider's premature `final` flag is accepted, but must not settle a non-early vote.
+batchesAndPrematureFinal : Script ()
+batchesAndPrematureFinal = script do
+  f <- found
+  (joiner, _) <- onboard f.provider "joiner"
+  dao <- submit f.founder do
+    exerciseCmd f.account Account_CreateDAO with
+      id = "batch-dao"; daoName = "Batch DAO"; description = ""; image = None
+      equal = True; rules = openSettings; decisions = openSettings
+      shares = [(f.founder, 1), (joiner, 1)]; more = []
+      actorPays = False; public = True; featuredAppRight = None
+  [(founderMember, _)] <- pure . filter
+    (\(_, m) -> m.daoId == "batch-dao" && m.party == f.founder) =<< query @Member f.founder
+  [(secondMember, _)] <- pure . filter
+    (\(_, m) -> m.daoId == "batch-dao") =<< query @Member joiner
+  pid <- submit f.founder do
+    exerciseCmd founderMember Member_Propose with
+      dao; pid = "batches"; title = "Vote"; description = ""
+      action = Signal; rule = None; votingDays = None; featuredAppRight = None
+  Some p <- queryContractId f.provider pid
+  first <- submit f.founder do
+    exerciseCmd founderMember Member_Cast with
+      proposalId = "batches"; closesAt = p.closesAt; changeable = False; vote = Yes
+      previous = None; previousV1 = None; featuredAppRight = None
+  early <- submit f.provider do
+    exerciseCmd pid Proposal_Tally with ballots = []; final = True; cast = Some [first]
+  Some pending <- queryContractId f.provider early
+  assert (pending.yes == 1 && pending.no == 0 && pending.outcome == None)
+  second <- submit joiner do
+    exerciseCmd secondMember Member_Cast with
+      proposalId = "batches"; closesAt = p.closesAt; changeable = False; vote = No
+      previous = None; previousV1 = None; featuredAppRight = None
+  again <- submit f.provider do
+    exerciseCmd early Proposal_Tally with ballots = []; final = False; cast = Some [second]
+  Some carried <- queryContractId f.provider again
+  assert (carried.yes == 1 && carried.no == 1 && carried.outcome == None)
+  setTime (addRelTime p.closesAt (days 1))
+  settled <- submit f.provider do
+    exerciseCmd again Proposal_Tally with ballots = []; final = True; cast = None
+  Some result <- queryContractId f.provider settled
+  assert (result.yes == 1 && result.no == 1 && result.outcome == Some Failed)
+
+-- | A member forgets closed proposals on the next vote, while the old proposal cannot
+-- count a ballot genuinely cast after its deadline, even if that ballot names a later deadline.
+expiredVotesArePruned : Script ()
+expiredVotesArePruned = script do
+  f <- found
+  (_, old) <- propose f "expired" Signal None
+  first <- voteV2 f f.member "expired" old.closesAt False Yes None None
+  [(beforeId, before)] <- query @Member f.founder
+  assert (before.voted == [("expired", old.closesAt)])
+  setTime (addRelTime old.closesAt (days 1))
+  (freshId, fresh) <- propose f "fresh" Signal None
+  next <- voteV2 f beforeId "fresh" fresh.closesAt False No None None
+  [(afterId, after)] <- query @Member f.founder
+  assert (afterId /= beforeId && after.voted == [("fresh", fresh.closesAt)])
+  late <- voteV2 f afterId "expired" fresh.closesAt False Yes None None
+  [(latestId, latest)] <- query @Member f.founder
+  assert (latestId /= afterId)
+  assert (latest.voted == [("expired", fresh.closesAt), ("fresh", fresh.closesAt)])
+  refuses f.provider "Cast after the deadline" do exerciseCmd late BallotV2_Count with proposal = old
+  settled <- submit f.provider do
+    exerciseCmd freshId Proposal_Tally with ballots = []; final = False; cast = Some [next]
+  Some counted <- queryContractId f.provider settled
+  assert (counted.no == 1 && counted.outcome == None)
+  [(oldId, _)] <- pure . filter (\(_, p) -> p.id == "expired") =<< query @Proposal f.provider
+  finished <- submit f.provider do
+    exerciseCmd oldId Proposal_Tally with ballots = []; final = True; cast = Some [first]
+  Some result <- queryContractId f.provider finished
+  assert (result.yes == 1 && result.outcome == Some Passed)
 
 -- | An unchangeable ballot cannot be replaced; replacing requires the actual current ballot.
 replacementAndWithdrawal : Script ()
