@@ -1,0 +1,55 @@
+-- | Statements record the provider's figures rather than holding coin; only that provider may
+-- rewrite one, and a rewrite consumes the old statement.
+module SyncVotes.Tests.Billing where
+
+import Daml.Script
+import DA.Time (addRelTime, days)
+import SyncVotes.Billing
+import SyncVotes.Tests.Fixtures
+
+statements : Script ()
+statements = script do
+  provider <- allocateParty "provider"
+  customer <- allocateParty "customer"
+  stranger <- allocateParty "stranger"
+  now <- getTime
+  meter <- submit provider do
+    createCmd Meter with
+      provider; daoId = "dao"; credited = 0.0; charged = 0.0; updatedAt = now
+  purse <- submit provider do
+    createCmd Purse with
+      provider; fingerprint = "fingerprint"; party = None
+      credited = 0.0; charged = 0.0; updatedAt = now
+  -- The statement is the provider's: the party named in a purse is not its controller.
+  trySubmit (actAs customer <> readAs provider) (do
+    exerciseCmd purse Purse_Update with newParty = Some customer; newCredited = 5.0; newCharged = 0.5)
+    >>= because "requires authorizers"
+  trySubmit (actAs stranger <> readAs provider) (do
+    exerciseCmd meter Meter_Update with newCredited = 10.0; newCharged = 1.0)
+    >>= because "requires authorizers"
+  setTime (addRelTime now (days 1))
+  nextMeter <- submit provider do
+    exerciseCmd meter Meter_Update with newCredited = 10.25; newCharged = 1.5
+  nextPurse <- submit provider do
+    exerciseCmd purse Purse_Update with newParty = Some customer; newCredited = 5.0; newCharged = 0.75
+  None <- queryContractId provider meter
+  None <- queryContractId provider purse
+  Some m <- queryContractId provider nextMeter
+  Some p <- queryContractId provider nextPurse
+  assert (m.daoId == "dao" && m.provider == provider)
+  assert (m.credited == 10.25 && m.charged == 1.5 && m.credited - m.charged == 8.75)
+  assert (m.updatedAt > now && m.updatedAt == addRelTime now (days 1))
+  assert (p.fingerprint == "fingerprint" && p.party == Some customer && p.provider == provider)
+  assert (p.credited == 5.0 && p.charged == 0.75 && p.credited - p.charged == 4.25)
+  assert (p.updatedAt > now)
+  -- A later update changes the recorded amounts and party without altering the key.
+  finalPurse <- submit provider do
+    exerciseCmd nextPurse Purse_Update with
+      newParty = None; newCredited = 7.0; newCharged = 2.0
+  None <- queryContractId provider nextPurse
+  Some final <- queryContractId provider finalPurse
+  assert (final.party == None && final.fingerprint == "fingerprint")
+  assert (final.credited == 7.0 && final.charged == 2.0)
+  [(onlyMeter, _)] <- query @Meter provider
+  [(onlyPurse, _)] <- query @Purse provider
+  assert (onlyMeter == nextMeter && onlyPurse == finalPurse)
