@@ -4,9 +4,9 @@ module SyncVotes.Tests.Fixtures where
 
 import Daml.Script
 import qualified DA.Text as T
-import SyncVotes.Account
-import SyncVotes.Governance
-import SyncVotes.Types
+import SyncVotes.Account (Account (..), Account_CreateDAO (..))
+import SyncVotes.Governance (DAO (..), Member (..))
+import SyncVotes.Types (Rule (..), Basis (..), Threshold (..), Settings (..))
 
 -- | A rule that decides nothing by itself: a simple majority of the whole vote, no quorum, no
 -- early settlement, ballots that cannot change. Tests that care about a rule set their own.

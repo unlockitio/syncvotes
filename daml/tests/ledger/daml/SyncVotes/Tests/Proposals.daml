@@ -1,14 +1,14 @@
--- | What a member may propose: which rule it runs under, and what the ledger refuses to put to
+-- | What a member may propose: which rule it runs under, and what the ledger Fixtures.refuses to put to
 -- a vote.
 module SyncVotes.Tests.Proposals where
 
 import Daml.Script
 import DA.Time (addRelTime, days)
-import SyncVotes.Governance
-import SyncVotes.Tests.Fixtures
-import SyncVotes.Types
+import SyncVotes.Governance (Member_Propose (..), Proposal (..))
+import qualified SyncVotes.Tests.Fixtures as Fixtures
+import SyncVotes.Types (Effect (..), Rule (..), Threshold (..), Settings (..))
 
-propose : Founded -> Text -> Effect -> Optional Rule -> Optional Int -> Commands (ContractId Proposal)
+propose : Fixtures.Founded -> Text -> Effect -> Optional Rule -> Optional Int -> Commands (ContractId Proposal)
 propose f pid action rule votingDays = exerciseCmd f.member Member_Propose with
   dao = f.dao; pid; title = "A proposal"; description = ""
   action; rule; votingDays; featuredAppRight = None
@@ -16,14 +16,14 @@ propose f pid action rule votingDays = exerciseCmd f.member Member_Propose with
 -- | A decision takes the DAO's default for a decision, and the proposer may set another.
 decisionTakesItsOwnRule : Script ()
 decisionTakesItsOwnRule = script do
-  let decisions = Settings with rule = (openRule with quorum = 10); votingDays = 7
-  f <- foundWith True openSettings decisions
+  let decisions = Settings with rule = (Fixtures.openRule with quorum = 10); votingDays = 7
+  f <- Fixtures.foundWith True Fixtures.openSettings decisions
   byDefault <- submit f.founder do propose f "default" Signal None None
   Some asIs <- queryContractId f.founder byDefault
   assert (asIs.rule == decisions.rule && asIs.eligible == 1)
   assert (asIs.closesAt == addRelTime asIs.createdAt (days 7))
   assert (asIs.outcome == None && asIs.executed == 0 && asIs.tallies == [])
-  let mine = openRule with threshold = Percent 75; quorum = 50
+  let mine = Fixtures.openRule with threshold = Percent 75; quorum = 50
   ofItsOwn <- submit f.founder do propose f "own" Signal (Some mine) (Some 3)
   Some set <- queryContractId f.founder ofItsOwn
   assert (set.rule == mine)
@@ -32,7 +32,7 @@ decisionTakesItsOwnRule = script do
 -- | A choice carries one tally per option and no yes or no.
 choiceCarriesTallies : Script ()
 choiceCarriesTallies = script do
-  f <- found
+  f <- Fixtures.found
   let options = ["First", "Second", "Third"]
   proposal <- submit f.founder do
     propose f "choice" (Choose with options; several = False) None None
@@ -43,89 +43,89 @@ choiceCarriesTallies = script do
 -- | A change to the DAO runs under the DAO's own voting rules, not the proposer's.
 daoChangesTakeTheDaoRules : Script ()
 daoChangesTakeTheDaoRules = script do
-  let rules = Settings with rule = (openRule with threshold = Percent 80); votingDays = 14
-  f <- foundWith True rules openSettings
+  let rules = Settings with rule = (Fixtures.openRule with threshold = Percent 80); votingDays = 14
+  f <- Fixtures.foundWith True rules Fixtures.openSettings
   proposal <- submit f.founder do
     propose f "rename" (SetInfo with daoName = "Renamed"; description = "New"; image = None) None None
   Some change <- queryContractId f.founder proposal
   assert (change.rule == rules.rule)
   assert (change.closesAt == addRelTime change.createdAt (days 14))
-  refuses f.founder "A proposal that changes the DAO runs under the DAO's voting rules" do
-    propose f "forced" (SetPublic with public = False) (Some openRule) None
-  refuses f.founder "A proposal that changes the DAO runs under the DAO's voting rules" do
+  Fixtures.refuses f.founder "A proposal that changes the DAO runs under the DAO's voting rules" do
+    propose f "forced" (SetPublic with public = False) (Some Fixtures.openRule) None
+  Fixtures.refuses f.founder "A proposal that changes the DAO runs under the DAO's voting rules" do
     propose f "hurried" (SetPublic with public = False) None (Some 1)
 
 proposalRefusals : Script ()
 proposalRefusals = script do
-  f <- found
-  refuses f.founder "A title of one to 120 characters" do
+  f <- Fixtures.found
+  Fixtures.refuses f.founder "A title of one to 120 characters" do
     exerciseCmd f.member Member_Propose with
       dao = f.dao; pid = "p"; title = ""; description = ""
       action = Signal; rule = None; votingDays = None; featuredAppRight = None
-  refuses f.founder "A title of one to 120 characters" do
+  Fixtures.refuses f.founder "A title of one to 120 characters" do
     exerciseCmd f.member Member_Propose with
-      dao = f.dao; pid = "p"; title = long 121; description = ""
+      dao = f.dao; pid = "p"; title = Fixtures.long 121; description = ""
       action = Signal; rule = None; votingDays = None; featuredAppRight = None
-  refuses f.founder "A description of at most 20 000 characters" do
+  Fixtures.refuses f.founder "A description of at most 20 000 characters" do
     exerciseCmd f.member Member_Propose with
-      dao = f.dao; pid = "p"; title = "A proposal"; description = long 20001
+      dao = f.dao; pid = "p"; title = "A proposal"; description = Fixtures.long 20001
       action = Signal; rule = None; votingDays = None; featuredAppRight = None
   -- A vote is open one to ninety days, and `early` and `changeable` exclude each other.
-  refuses f.founder "The rule's numbers are out of range" do
+  Fixtures.refuses f.founder "The rule's numbers are out of range" do
     propose f "p" Signal None (Some 0)
-  refuses f.founder "The rule's numbers are out of range" do
+  Fixtures.refuses f.founder "The rule's numbers are out of range" do
     propose f "p" Signal None (Some 91)
-  refuses f.founder "The rule's numbers are out of range" do
-    propose f "p" Signal (Some (openRule with early = True; changeable = True)) None
-  refuses f.founder "The rule's numbers are out of range" do
-    propose f "p" Signal (Some (openRule with quorum = 101)) None
-  refuses f.founder "The rule's numbers are out of range" do
-    propose f "p" Signal (Some (openRule with threshold = Percent 0)) None
-  refuses f.founder "The rule's numbers are out of range" do
-    propose f "p" Signal (Some (openRule with threshold = Fraction 3 2)) None
-  refuses f.provider "requires authorizers" do propose f "p" Signal None None
+  Fixtures.refuses f.founder "The rule's numbers are out of range" do
+    propose f "p" Signal (Some (Fixtures.openRule with early = True; changeable = True)) None
+  Fixtures.refuses f.founder "The rule's numbers are out of range" do
+    propose f "p" Signal (Some (Fixtures.openRule with quorum = 101)) None
+  Fixtures.refuses f.founder "The rule's numbers are out of range" do
+    propose f "p" Signal (Some (Fixtures.openRule with threshold = Percent 0)) None
+  Fixtures.refuses f.founder "The rule's numbers are out of range" do
+    propose f "p" Signal (Some (Fixtures.openRule with threshold = Fraction 3 2)) None
+  Fixtures.refuses f.provider "requires authorizers" do propose f "p" Signal None None
   proposals <- query @Proposal f.provider
   assert (null proposals)
 
 choiceRefusals : Script ()
 choiceRefusals = script do
-  f <- found
+  f <- Fixtures.found
   let choice options several = propose f "p" (Choose with options; several) None None
-  refuses f.founder "Two to ten distinct options" do choice ["Only one"] False
-  refuses f.founder "Two to ten distinct options" do
+  Fixtures.refuses f.founder "Two to ten distinct options" do choice ["Only one"] False
+  Fixtures.refuses f.founder "Two to ten distinct options" do
     choice (map (\i -> "Option " <> show i) [1 .. 11]) False
-  refuses f.founder "Two to ten distinct options" do choice ["Same", "Same"] False
-  refuses f.founder "Two to ten distinct options" do choice ["", "Second"] False
-  refuses f.founder "Two to ten distinct options" do choice [long 81, "Second"] False
+  Fixtures.refuses f.founder "Two to ten distinct options" do choice ["Same", "Same"] False
+  Fixtures.refuses f.founder "Two to ten distinct options" do choice ["", "Second"] False
+  Fixtures.refuses f.founder "Two to ten distinct options" do choice [Fixtures.long 81, "Second"] False
   proposals <- query @Proposal f.provider
   assert (null proposals)
 
 effectRefusals : Script ()
 effectRefusals = script do
-  f <- found
-  (other, _) <- onboard f.provider "other"
-  let bad = openSettings with votingDays = 0
-  refuses f.founder "The voting rules' numbers are out of range" do
+  f <- Fixtures.found
+  (other, _) <- Fixtures.onboard f.provider "other"
+  let bad = Fixtures.openSettings with votingDays = 0
+  Fixtures.refuses f.founder "The voting rules' numbers are out of range" do
     propose f "p" (SetRules with rules = bad) None None
-  refuses f.founder "The voting rules' numbers are out of range" do
-    propose f "p" (SetSettings with rules = bad; decisions = openSettings) None None
-  refuses f.founder "The voting rules' numbers are out of range" do
-    propose f "p" (SetSettings with rules = openSettings; decisions = bad) None None
-  refuses f.founder "A name of one to 60 characters" do
+  Fixtures.refuses f.founder "The voting rules' numbers are out of range" do
+    propose f "p" (SetSettings with rules = bad; decisions = Fixtures.openSettings) None None
+  Fixtures.refuses f.founder "The voting rules' numbers are out of range" do
+    propose f "p" (SetSettings with rules = Fixtures.openSettings; decisions = bad) None None
+  Fixtures.refuses f.founder "A name of one to 60 characters" do
     propose f "p" (SetInfo with daoName = ""; description = ""; image = None) None None
-  refuses f.founder "A name of one to 60 characters" do
-    propose f "p" (SetInfo with daoName = "Valid"; description = long 10001; image = None) None None
-  refuses f.founder "A name of one to 60 characters" do
+  Fixtures.refuses f.founder "A name of one to 60 characters" do
+    propose f "p" (SetInfo with daoName = "Valid"; description = Fixtures.long 10001; image = None) None None
+  Fixtures.refuses f.founder "A name of one to 60 characters" do
     propose f "p" (SetInfo with
       daoName = "Valid"; description = ""; image = Some "ftp://example.org") None None
   -- By membership one unit or none, each party once, and never a negative share.
-  refuses f.founder "The share change must be whole" do
+  Fixtures.refuses f.founder "The share change must be whole" do
     propose f "p" (SetShares with changes = [(other, 2)]) None None
-  refuses f.founder "The share change must be whole" do
+  Fixtures.refuses f.founder "The share change must be whole" do
     propose f "p" (SetShares with changes = [(other, -1)]) None None
-  refuses f.founder "The share change must be whole" do
+  Fixtures.refuses f.founder "The share change must be whole" do
     propose f "p" (SetShares with changes = [(other, 1), (other, 0)]) None None
-  refuses f.founder "The share change must be whole" do
+  Fixtures.refuses f.founder "The share change must be whole" do
     propose f "p" (SetShares with changes = []) None None
   proposals <- query @Proposal f.provider
   assert (null proposals)
@@ -133,8 +133,8 @@ effectRefusals = script do
 -- | By shares a member may hold many units; only a DAO voting by membership is capped at one.
 sharesByUnitsAreAllowed : Script ()
 sharesByUnitsAreAllowed = script do
-  f <- foundWith False openSettings openSettings
-  (other, _) <- onboard f.provider "other"
+  f <- Fixtures.foundWith False Fixtures.openSettings Fixtures.openSettings
+  (other, _) <- Fixtures.onboard f.provider "other"
   proposal <- submit f.founder do
     propose f "shares" (SetShares with changes = [(other, 7)]) None None
   Some put <- queryContractId f.founder proposal

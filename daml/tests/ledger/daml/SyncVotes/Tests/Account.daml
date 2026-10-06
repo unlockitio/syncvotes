@@ -2,14 +2,27 @@
 module SyncVotes.Tests.Account where
 
 import Daml.Script
-import SyncVotes.Account
-import SyncVotes.Governance
-import SyncVotes.Tests.Fixtures
-import SyncVotes.Types
+import SyncVotes.Account (Account_CreateDAO (..), Account_SetProfile (..), Profile (..))
+import SyncVotes.Governance (DAO (..), Proposal (..))
+import qualified SyncVotes.Tests.Fixtures as Fixtures
+import SyncVotes.Types (Outcome (..), Effect (..))
+
+archiveAccount : Script ()
+archiveAccount = script do
+  f <- Fixtures.found
+  Some live <- queryContractId f.provider f.account
+  assert (live.user == f.founder)
+  trySubmit (actAs f.founder <> readAs f.provider) (do
+    exerciseCmd f.account Archive) >>= Fixtures.because "requires authorizers"
+  Some _ <- queryContractId f.provider f.account
+  submit f.provider do exerciseCmd f.account Archive
+  None <- queryContractId f.provider f.account
+  Some dao <- queryContractId f.founder f.dao
+  assert (dao.creator == f.founder)
 
 profileReplacement : Script ()
 profileReplacement = script do
-  f <- found
+  f <- Fixtures.found
   first <- submit f.founder do
     exerciseCmd f.account Account_SetProfile with
       name = "Founder"; avatar = None; bio = "First"; previous = None
@@ -27,25 +40,25 @@ profileReplacement = script do
 
 profileRefusals : Script ()
 profileRefusals = script do
-  f <- found
-  (other, otherAccount) <- onboard f.provider "other"
+  f <- Fixtures.found
+  (other, otherAccount) <- Fixtures.onboard f.provider "other"
   theirs <- submit other do
     exerciseCmd otherAccount Account_SetProfile with
       name = "Other"; avatar = None; bio = ""; previous = None
-  refuses f.founder "A profile needs a name" do
+  Fixtures.refuses f.founder "A profile needs a name" do
     exerciseCmd f.account Account_SetProfile with
       name = ""; avatar = None; bio = ""; previous = None
-  refuses f.founder "A name of one to 60 characters" do
+  Fixtures.refuses f.founder "A name of one to 60 characters" do
     exerciseCmd f.account Account_SetProfile with
-      name = long 61; avatar = None; bio = ""; previous = None
-  refuses f.founder "A name of one to 60 characters" do
+      name = Fixtures.long 61; avatar = None; bio = ""; previous = None
+  Fixtures.refuses f.founder "A name of one to 60 characters" do
     exerciseCmd f.account Account_SetProfile with
       name = "Valid"; avatar = Some "http://insecure.example"; bio = ""; previous = None
   trySubmit (actAs f.founder <> readAs other) (do
     exerciseCmd f.account Account_SetProfile with
       name = "Valid"; avatar = None; bio = ""; previous = Some theirs)
-    >>= because "Not this party's profile"
-  refuses f.provider "requires authorizers" do
+    >>= Fixtures.because "Not this party's profile"
+  Fixtures.refuses f.provider "requires authorizers" do
     exerciseCmd f.account Account_SetProfile with
       name = "Provider"; avatar = None; bio = ""; previous = None
   Some retained <- queryContractId other theirs
@@ -55,21 +68,21 @@ profileRefusals = script do
 
 founding : Script ()
 founding = script do
-  f <- found
+  f <- Fixtures.found
   Some dao <- queryContractId f.founder f.dao
   Some member <- queryContractId f.founder f.member
   assert (dao.name == "Test DAO" && dao.members == 1 && dao.units == 1)
-  assert (dao.rules == openSettings && dao.decisions == openSettings)
+  assert (dao.rules == Fixtures.openSettings && dao.decisions == Fixtures.openSettings)
   assert (member.party == f.founder && member.share == 1)
 
 foundingWithMore : Script ()
 foundingWithMore = script do
-  f <- found
-  (joiner, _) <- onboard f.provider "joiner"
+  f <- Fixtures.found
+  (joiner, _) <- Fixtures.onboard f.provider "joiner"
   next <- submit f.founder do
     exerciseCmd f.account Account_CreateDAO with
       id = "batch"; daoName = "Batch DAO"; description = ""; image = None
-      equal = False; rules = openSettings; decisions = openSettings
+      equal = False; rules = Fixtures.openSettings; decisions = Fixtures.openSettings
       shares = [(f.founder, 2)]; more = [(joiner, 3)]
       actorPays = True; public = False; featuredAppRight = None
   Some dao <- queryContractId f.founder next
@@ -80,27 +93,27 @@ foundingWithMore = script do
 
 foundingRefusals : Script ()
 foundingRefusals = script do
-  f <- found
+  f <- Fixtures.found
   let create name shares more rules = exerciseCmd f.account Account_CreateDAO with
         id = "rejected"; daoName = name; description = ""; image = None
-        equal = True; rules; decisions = openSettings; shares; more
+        equal = True; rules; decisions = Fixtures.openSettings; shares; more
         actorPays = False; public = True; featuredAppRight = None
-  refuses f.founder "A DAO needs a name" do
-    create "" [(f.founder, 1)] [] openSettings
-  refuses f.founder "A name of one to 60 characters" do
-    create (long 61) [(f.founder, 1)] [] openSettings
-  refuses f.founder "The settings' numbers are out of range" do
-    create "Valid" [(f.founder, 1)] [] (openSettings with votingDays = 0)
-  refuses f.founder "The founding shares must be whole" do
-    create "Valid" [(f.founder, 1)] [(f.founder, 1)] openSettings
-  refuses f.founder "The first batch is one to a batch" do
-    create "Valid" [] [(f.founder, 1)] openSettings
-  refuses f.founder "The founding shares are all positive" do
-    create "Valid" [(f.founder, 0)] [] openSettings
-  (other, _) <- onboard f.provider "other"
-  refuses f.founder "The founder holds a share" do
-    create "Valid" [(other, 1)] [] openSettings
-  refuses f.provider "requires authorizers" do
-    create "Valid" [(f.founder, 1)] [] openSettings
+  Fixtures.refuses f.founder "A DAO needs a name" do
+    create "" [(f.founder, 1)] [] Fixtures.openSettings
+  Fixtures.refuses f.founder "A name of one to 60 characters" do
+    create (Fixtures.long 61) [(f.founder, 1)] [] Fixtures.openSettings
+  Fixtures.refuses f.founder "The settings' numbers are out of range" do
+    create "Valid" [(f.founder, 1)] [] (Fixtures.openSettings with votingDays = 0)
+  Fixtures.refuses f.founder "The founding shares must be whole" do
+    create "Valid" [(f.founder, 1)] [(f.founder, 1)] Fixtures.openSettings
+  Fixtures.refuses f.founder "The first batch is one to a batch" do
+    create "Valid" [] [(f.founder, 1)] Fixtures.openSettings
+  Fixtures.refuses f.founder "The founding shares are all positive" do
+    create "Valid" [(f.founder, 0)] [] Fixtures.openSettings
+  (other, _) <- Fixtures.onboard f.provider "other"
+  Fixtures.refuses f.founder "The founder holds a share" do
+    create "Valid" [(other, 1)] [] Fixtures.openSettings
+  Fixtures.refuses f.provider "requires authorizers" do
+    create "Valid" [(f.founder, 1)] [] Fixtures.openSettings
   daos <- query @DAO f.provider
   assert (length daos == 1)

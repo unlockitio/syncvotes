@@ -2,11 +2,11 @@ module SyncVotes.Tests.Markers where
 
 import Daml.Script
 import DA.Time (addRelTime, days)
-import Splice.Api.FeaturedAppRightV1
-import SyncVotes.Account
-import SyncVotes.Governance
-import SyncVotes.Tests.Fixtures
-import SyncVotes.Types
+import Splice.Api.FeaturedAppRightV1 (FeaturedAppRight, FeaturedAppRightView (..), FeaturedAppActivityMarker, FeaturedAppActivityMarkerView (..), FeaturedAppRight_CreateActivityMarkerResult (..))
+import SyncVotes.Account (Account (..), Account_CreateDAO (..))
+import SyncVotes.Governance (DAO (..), DAO_Execute (..), Member (..), Member_Propose (..), Member_Cast (..), Proposal (..), Proposal_Tally (..))
+import qualified SyncVotes.Tests.Fixtures as Fixtures
+import SyncVotes.Types (Effect (..), Vote (..), Outcome (..))
 
 -- Test-ledger implementation of the packaged Splice interfaces, not a production right.
 template TestRight
@@ -44,8 +44,8 @@ rightFor dso provider user = do
 
 markers : Party -> Script [FeaturedAppActivityMarkerView]
 markers provider = do
-  found <- queryInterface @FeaturedAppActivityMarker provider
-  forA found \(_, record) -> case record of
+  discovered <- queryInterface @FeaturedAppActivityMarker provider
+  forA discovered \(_, record) -> case record of
     Some marker -> pure marker
     None -> abort "Marker interface view missing"
 
@@ -66,10 +66,10 @@ creationAndProviderGuard = script do
   account <- submit provider do createCmd Account with provider; user = founder
   right <- rightFor dso provider founder
   wrong <- rightFor dso other founder
-  refuses founder "Not this app's featured app right" do
+  Fixtures.refuses founder "Not this app's featured app right" do
     exerciseCmd account Account_CreateDAO with
       id = "wrong"; daoName = "Wrong"; description = ""; image = None
-      equal = True; rules = openSettings; decisions = openSettings
+      equal = True; rules = Fixtures.openSettings; decisions = Fixtures.openSettings
       shares = [(founder, 1)]; more = []; actorPays = False; public = True
       featuredAppRight = Some wrong
   [] <- query @DAO provider
@@ -77,7 +77,7 @@ creationAndProviderGuard = script do
   dao <- submit founder do
     exerciseCmd account Account_CreateDAO with
       id = "dao"; daoName = "DAO"; description = ""; image = None
-      equal = True; rules = openSettings; decisions = openSettings
+      equal = True; rules = Fixtures.openSettings; decisions = Fixtures.openSettings
       shares = [(founder, 1)]; more = []; actorPays = False; public = True
       featuredAppRight = Some right
   Some _ <- queryContractId provider dao
@@ -86,7 +86,7 @@ creationAndProviderGuard = script do
   proposal <- submit founder do
     exerciseCmd member Member_Propose with
       dao; pid = "vote"; title = "Vote"; description = ""; action = Signal
-      rule = Some (openRule with changeable = True); votingDays = None
+      rule = Some (Fixtures.openRule with changeable = True); votingDays = None
       featuredAppRight = Some right
   checkMarkers dso provider 2
   Some p <- queryContractId provider proposal
@@ -110,7 +110,7 @@ creationAndProviderGuard = script do
   assert (settled.outcome == Some Failed)
   -- A separate, passed share change requires two batches. Only completion marks.
   [(current, _)] <- query @Member founder
-  (joiner, _) <- onboard provider "joiner"
+  (joiner, _) <- Fixtures.onboard provider "joiner"
   change <- submit founder do
     exerciseCmd current Member_Propose with
       dao; pid = "shares"; title = "Shares"; description = ""

@@ -4,8 +4,34 @@ module SyncVotes.Tests.Billing where
 
 import Daml.Script
 import DA.Time (addRelTime, days)
-import SyncVotes.Billing
-import SyncVotes.Tests.Fixtures
+import SyncVotes.Billing (Meter (..), Meter_Update (..), Purse (..), Purse_Update (..))
+import qualified SyncVotes.Tests.Fixtures as Fixtures
+
+archiveStatements : Script ()
+archiveStatements = script do
+  provider <- allocateParty "provider"
+  customer <- allocateParty "customer"
+  now <- getTime
+  meter <- submit provider do
+    createCmd Meter with
+      provider; daoId = "dao"; credited = 5.0; charged = 1.0; updatedAt = now
+  purse <- submit provider do
+    createCmd Purse with
+      provider; fingerprint = "customer"; party = Some customer
+      credited = 7.0; charged = 2.0; updatedAt = now
+  Some m <- queryContractId provider meter
+  Some p <- queryContractId provider purse
+  assert (m.credited - m.charged == 4.0 && p.party == Some customer)
+  trySubmit (actAs customer <> readAs provider) (do
+    exerciseCmd purse Archive) >>= Fixtures.because "requires authorizers"
+  Some _ <- queryContractId provider purse
+  submit provider do exerciseCmd meter Archive
+  submit provider do exerciseCmd purse Archive
+  None <- queryContractId provider meter
+  None <- queryContractId provider purse
+  [] <- query @Meter provider
+  [] <- query @Purse provider
+  pure ()
 
 statements : Script ()
 statements = script do
@@ -23,10 +49,10 @@ statements = script do
   -- The statement is the provider's: the party named in a purse is not its controller.
   trySubmit (actAs customer <> readAs provider) (do
     exerciseCmd purse Purse_Update with newParty = Some customer; newCredited = 5.0; newCharged = 0.5)
-    >>= because "requires authorizers"
+    >>= Fixtures.because "requires authorizers"
   trySubmit (actAs stranger <> readAs provider) (do
     exerciseCmd meter Meter_Update with newCredited = 10.0; newCharged = 1.0)
-    >>= because "requires authorizers"
+    >>= Fixtures.because "requires authorizers"
   setTime (addRelTime now (days 1))
   nextMeter <- submit provider do
     exerciseCmd meter Meter_Update with newCredited = 10.25; newCharged = 1.5

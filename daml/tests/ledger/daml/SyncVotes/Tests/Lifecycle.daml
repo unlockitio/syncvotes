@@ -2,9 +2,9 @@ module SyncVotes.Tests.Lifecycle where
 
 import Daml.Script
 import DA.Time (addRelTime, days)
-import SyncVotes.Account
-import SyncVotes.Governance
-import SyncVotes.Types
+import SyncVotes.Account (Account (..), Account_CreateDAO (..))
+import SyncVotes.Governance (DAO_Execute (..), Member (..), Member_Propose (..), Member_Cast (..), BallotV2 (..), Proposal (..), Proposal_Tally (..))
+import SyncVotes.Types (Rule (..), Basis (..), Threshold (..), Settings (..), Effect (..), Vote (..), Outcome (..))
 
 lifecycle : Script ()
 lifecycle = script do

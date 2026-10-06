@@ -4,19 +4,50 @@ module SyncVotes.Tests.Execution where
 
 import Daml.Script
 import DA.Time (addRelTime, days)
-import SyncVotes.Account
-import SyncVotes.Governance
-import SyncVotes.Tests.Fixtures
-import SyncVotes.Types
+import SyncVotes.Account (Account_CreateDAO (..))
+import SyncVotes.Governance (DAO (..), DAO_Execute (..), DAO_BeginDissolving (..), Member (..), Member_Propose (..), Member_Cast (..), Member_Vote (..), Proposal (..), Proposal_Tally (..), Proposal_Advance (..))
+import qualified SyncVotes.Tests.Fixtures as Fixtures
+import SyncVotes.Types (Effect (..), Vote (..), Outcome (..), Settings (..), Basis (..), Threshold (..))
 
-propose : Founded -> ContractId DAO -> ContractId Member -> Text -> Effect -> Script (ContractId Proposal)
+propose : Fixtures.Founded -> ContractId DAO -> ContractId Member -> Text -> Effect -> Script (ContractId Proposal)
 propose f dao member pid action = submit f.founder do
   exerciseCmd member Member_Propose with
     dao; pid; title = "Change"; description = ""; action
     rule = None; votingDays = None; featuredAppRight = None
 
+archiveGovernance : Script ()
+archiveGovernance = script do
+  f <- Fixtures.found
+  proposal <- propose f f.dao f.member "archive" Signal
+  Some p <- queryContractId f.provider proposal
+  ballot <- submit f.founder do
+    exerciseCmd f.member Member_Vote with
+      proposalId = p.id; closesAt = p.closesAt; changeable = False; vote = Yes
+      previous = None; featuredAppRight = None
+  [(member, _)] <- query @Member f.founder
+  modern <- submit f.founder do
+    exerciseCmd member Member_Cast with
+      proposalId = "second"; closesAt = p.closesAt; changeable = False; vote = No
+      previous = None; previousV1 = None; featuredAppRight = None
+  Some old <- queryContractId f.provider ballot
+  Some new <- queryContractId f.provider modern
+  assert (old.voter == f.founder && new.voter == f.founder)
+  trySubmit (actAs f.provider <> readAs f.founder) (do
+    exerciseCmd modern Archive) >>= Fixtures.because "requires authorizers"
+  Some _ <- queryContractId f.provider modern
+  submit (actAs [f.provider, f.founder]) do exerciseCmd ballot Archive
+  submit (actAs [f.provider, f.founder]) do exerciseCmd modern Archive
+  submit (actAs [f.provider, f.founder]) do exerciseCmd proposal Archive
+  submit (actAs [f.provider, f.founder]) do exerciseCmd f.dao Archive
+  None <- queryContractId f.provider ballot
+  None <- queryContractId f.provider modern
+  None <- queryContractId f.provider proposal
+  None <- queryContractId f.provider f.dao
+  [(survivorId, survivor)] <- query @Member f.founder
+  assert (survivorId /= member && survivor.party == f.founder)
+
 -- | Carries a proposal with the founder's single vote and settles it after the deadline.
-passWith : Founded -> ContractId Member -> ContractId Proposal -> Vote -> Outcome -> Script (ContractId Proposal)
+passWith : Fixtures.Founded -> ContractId Member -> ContractId Proposal -> Vote -> Outcome -> Script (ContractId Proposal)
 passWith f member proposal vote outcome = do
   Some p <- queryContractId f.provider proposal
   ballot <- submit f.founder do
@@ -30,10 +61,10 @@ passWith f member proposal vote outcome = do
   assert (result.outcome == Some outcome)
   pure settled
 
-pass : Founded -> ContractId Member -> ContractId Proposal -> Script (ContractId Proposal)
+pass : Fixtures.Founded -> ContractId Member -> ContractId Proposal -> Script (ContractId Proposal)
 pass f member proposal = passWith f member proposal Yes Passed
 
-execute : Founded -> ContractId DAO -> ContractId Proposal -> [ContractId Member] -> Int -> Script (Optional (ContractId DAO))
+execute : Fixtures.Founded -> ContractId DAO -> ContractId Proposal -> [ContractId Member] -> Int -> Script (Optional (ContractId DAO))
 execute f dao proposal current upTo = submit f.provider do
   exerciseCmd dao DAO_Execute with proposal; current; upTo; featuredAppRight = None
 
@@ -54,25 +85,25 @@ membership reader party = do
 -- | Invalid batches roll back the proposal's progress as well as the DAO's state.
 shareBatches : Script ()
 shareBatches = script do
-  f <- foundWith False (openSettings with rule = openRule with basis = OfCast) openSettings
-  (joiner, _) <- onboard f.provider "joiner"
-  (outsider, outsiderAccount) <- onboard f.provider "outsider"
+  f <- Fixtures.foundWith False (Fixtures.openSettings with rule = Fixtures.openRule with basis = OfCast) Fixtures.openSettings
+  (joiner, _) <- Fixtures.onboard f.provider "joiner"
+  (outsider, outsiderAccount) <- Fixtures.onboard f.provider "outsider"
   otherDao <- submit outsider do
     exerciseCmd outsiderAccount Account_CreateDAO with
       id = "other"; daoName = "Other"; description = ""; image = None
-      equal = False; rules = openSettings; decisions = openSettings
+      equal = False; rules = Fixtures.openSettings; decisions = Fixtures.openSettings
       shares = [(outsider, 1)]; more = []; actorPays = False
       public = True; featuredAppRight = None
   Some _ <- queryContractId f.provider otherDao
   [(otherMember, _)] <- query @Member outsider
   p <- propose f f.dao f.member "shares" (SetShares [(f.founder, 3), (joiner, 2), (outsider, 4)])
   passed <- pass f f.member p
-  refuses f.provider "The batch must move on" do
+  Fixtures.refuses f.provider "The batch must move on" do
     exerciseCmd f.dao DAO_Execute with proposal = passed; current = []; upTo = 0; featuredAppRight = None
   [(votedMember, _)] <- query @Member f.founder
-  refuses f.provider "A member handed in twice" do
+  Fixtures.refuses f.provider "A member handed in twice" do
     exerciseCmd f.dao DAO_Execute with proposal = passed; current = [votedMember, votedMember]; upTo = 2; featuredAppRight = None
-  refuses f.provider "Not a member of this DAO" do
+  Fixtures.refuses f.provider "Not a member of this DAO" do
     exerciseCmd f.dao DAO_Execute with proposal = passed; current = [otherMember]; upTo = 3; featuredAppRight = None
   Some before <- queryContractId f.provider passed
   assert (before.executed == 0 && before.executedAt == None)
@@ -87,9 +118,9 @@ shareBatches = script do
   -- The proposal that was advanced is a new contract, with the batch recorded on it.
   [(progressId, progress)] <- query @Proposal f.provider
   assert (progress.executed == 2 && progress.executedAt == None)
-  refuses f.provider "The batch must move on" do
+  Fixtures.refuses f.provider "The batch must move on" do
     exerciseCmd first DAO_Execute with proposal = progressId; current = []; upTo = 2; featuredAppRight = None
-  refuses f.provider "A member not in this batch" do
+  Fixtures.refuses f.provider "A member not in this batch" do
     exerciseCmd first DAO_Execute with proposal = progressId; current = [founderMember]; upTo = 3; featuredAppRight = None
   last <- retain =<< execute f first progressId [] 3
   Some completed <- queryContractId f.provider last
@@ -97,8 +128,8 @@ shareBatches = script do
   [(finishedId, finished)] <- query @Proposal f.provider
   assert (finished.executed == 3 && finished.executedAt /= None)
   -- A share change that is fully carried out is out of batches before its proposal is consulted,
-  -- so the batch guard, not `Proposal_Advance`'s "Already executed", is what refuses a repeat.
-  refuses f.provider "The batch must move on" do
+  -- so the batch guard, not `Proposal_Advance`'s "Already executed", is what Fixtures.refuses a repeat.
+  Fixtures.refuses f.provider "The batch must move on" do
     exerciseCmd last DAO_Execute with proposal = finishedId; current = []; upTo = 3; featuredAppRight = None
   removal <- propose f last founderMember "remove" (SetShares [(joiner, 0)])
   removalPassed <- pass f founderMember removal
@@ -111,9 +142,9 @@ shareBatches = script do
 -- | Each effect that rewrites the DAO writes exactly its own fields, and leaves the rest standing.
 effectsRewriteTheDao : Script ()
 effectsRewriteTheDao = script do
-  f <- found
-  let strict = Settings with rule = (openRule with threshold = Percent 80); votingDays = 5
-      loose = Settings with rule = (openRule with quorum = 25); votingDays = 2
+  f <- Fixtures.found
+  let strict = Settings with rule = (Fixtures.openRule with threshold = Percent 80); votingDays = 5
+      loose = Settings with rule = (Fixtures.openRule with quorum = 25); votingDays = 2
       step dao member pid action = do
         p <- propose f dao member pid action
         settled <- pass f member p
@@ -122,7 +153,7 @@ effectsRewriteTheDao = script do
         (next, _) <- membership f.founder f.founder
         pure (cid, next, live)
   (afterSignal, m1, signalled) <- step f.dao f.member "signal" Signal
-  assert (signalled.name == "Test DAO" && signalled.public && signalled.rules == openSettings)
+  assert (signalled.name == "Test DAO" && signalled.public && signalled.rules == Fixtures.openSettings)
   (afterChoice, m2, chosen) <- do
     p <- propose f afterSignal m1 "choice" (Choose with options = ["A", "B"]; several = False)
     settled <- passWith f m1 p (Pick 1) (Chosen 1)
@@ -130,21 +161,21 @@ effectsRewriteTheDao = script do
     Some live <- queryContractId f.provider cid
     (next, _) <- membership f.founder f.founder
     pure (cid, next, live)
-  assert (chosen.name == "Test DAO" && chosen.decisions == openSettings)
+  assert (chosen.name == "Test DAO" && chosen.decisions == Fixtures.openSettings)
   (afterInfo, m3, renamed) <- step afterChoice m2 "info"
     (SetInfo with daoName = "Renamed"; description = "Said so"; image = Some "https://example.org/a.png")
   assert (renamed.name == "Renamed" && renamed.description == "Said so")
   assert (renamed.image == Some "https://example.org/a.png")
   assert (renamed.members == 1 && renamed.units == 1 && renamed.createdAt == signalled.createdAt)
   (afterRules, m4, stricter) <- step afterInfo m3 "rules" (SetRules with rules = strict)
-  assert (stricter.rules == strict && stricter.decisions == openSettings)
+  assert (stricter.rules == strict && stricter.decisions == Fixtures.openSettings)
   assert (stricter.name == "Renamed")
   (afterPublic, m5, closed) <- step afterRules m4 "public" (SetPublic with public = False)
   assert (not closed.public && closed.rules == strict)
   -- A proposal under the strict rules still passes on the founder's whole vote.
   (afterSettings, _, both) <- step afterPublic m5 "settings"
-    (SetSettings with rules = openSettings; decisions = loose)
-  assert (both.rules == openSettings && both.decisions == loose)
+    (SetSettings with rules = Fixtures.openSettings; decisions = loose)
+  assert (both.rules == Fixtures.openSettings && both.decisions == loose)
   assert (not both.public && both.name == "Renamed")
   [(_, lastProposal)] <- pure . filter (\(_, p) -> p.id == "settings") =<< query @Proposal f.provider
   assert (lastProposal.executed == 1 && lastProposal.executedAt /= None)
@@ -154,10 +185,10 @@ effectsRewriteTheDao = script do
 -- | A dissolution waits before it takes effect: the DAO stops taking proposals, then goes.
 dissolution : Script ()
 dissolution = script do
-  f <- found
+  f <- Fixtures.found
   pending <- propose f f.dao f.member "open" Signal
   dissolve <- propose f f.dao f.member "dissolve" Dissolve
-  refuses f.provider "Not a dissolution that passed" do
+  Fixtures.refuses f.provider "Not a dissolution that passed" do
     exerciseCmd f.dao DAO_BeginDissolving with proposal = dissolve
   (voter, _) <- membership f.founder f.founder
   Some openProposal <- queryContractId f.provider pending
@@ -167,17 +198,17 @@ dissolution = script do
       vote = Yes; previous = None; previousV1 = None; featuredAppRight = None
   (nextVoter, _) <- membership f.founder f.founder
   passed <- pass f nextVoter dissolve
-  refuses f.provider "Not a dissolution that passed" do
+  Fixtures.refuses f.provider "Not a dissolution that passed" do
     exerciseCmd f.dao DAO_BeginDissolving with proposal = pending
   dissolving <- submit f.provider do
     exerciseCmd f.dao DAO_BeginDissolving with proposal = passed
   Some waiting <- queryContractId f.provider dissolving
   assert (waiting.dissolving /= None && waiting.id == "dao" && waiting.members == 1)
-  refuses f.provider "Already dissolving" do
+  Fixtures.refuses f.provider "Already dissolving" do
     exerciseCmd dissolving DAO_BeginDissolving with proposal = passed
   -- Nothing new is proposed while it waits, so the wait has an end.
   (member, _) <- membership f.founder f.founder
-  refuses f.founder "The DAO is being dissolved; nothing new can be proposed" do
+  Fixtures.refuses f.founder "The DAO is being dissolved; nothing new can be proposed" do
     exerciseCmd member Member_Propose with
       dao = dissolving; pid = "late"; title = "Too late"; description = ""
       action = Signal; rule = None; votingDays = None; featuredAppRight = None
@@ -205,12 +236,12 @@ dissolution = script do
 -- DAO's own proposals move it.
 executionAuthority : Script ()
 executionAuthority = script do
-  f <- found
-  (outsider, outsiderAccount) <- onboard f.provider "outsider"
+  f <- Fixtures.found
+  (outsider, outsiderAccount) <- Fixtures.onboard f.provider "outsider"
   theirDao <- submit outsider do
     exerciseCmd outsiderAccount Account_CreateDAO with
       id = "dao"; daoName = "Same id, other authority"; description = ""; image = None
-      equal = True; rules = openSettings; decisions = openSettings
+      equal = True; rules = Fixtures.openSettings; decisions = Fixtures.openSettings
       shares = [(outsider, 1)]; more = []; actorPays = False
       public = True; featuredAppRight = None
   (theirMember, _) <- membership outsider outsider
@@ -227,37 +258,37 @@ executionAuthority = script do
   theirSettled <- submit f.provider do
     exerciseCmd theirs Proposal_Tally with ballots = []; final = True; cast = Some [theirBallot]
   -- A passed proposal of a DAO of the same id, under another creator, moves nothing here.
-  refuses f.provider "Not this DAO's proposal" do
+  Fixtures.refuses f.provider "Not this DAO's proposal" do
     exerciseCmd f.dao DAO_Execute with
       proposal = theirSettled; current = []; upTo = 1; featuredAppRight = None
-  refuses f.provider "Not this DAO's proposal" do
+  Fixtures.refuses f.provider "Not this DAO's proposal" do
     exerciseCmd f.dao DAO_BeginDissolving with proposal = theirSettled
   mine <- propose f f.dao f.member "mine" Signal
-  refuses f.provider "The proposal did not pass" do
+  Fixtures.refuses f.provider "The proposal did not pass" do
     exerciseCmd f.dao DAO_Execute with proposal = mine; current = []; upTo = 1; featuredAppRight = None
   (voter, _) <- membership f.founder f.founder
   failed <- passWith f voter mine No Failed
-  refuses f.provider "The proposal did not pass" do
+  Fixtures.refuses f.provider "The proposal did not pass" do
     exerciseCmd f.dao DAO_Execute with proposal = failed; current = []; upTo = 1; featuredAppRight = None
   -- Executing is the provider's, with the DAO's authority; the creator alone cannot.
   (member, _) <- membership f.founder f.founder
   second <- propose f f.dao member "second" Signal
   settled <- pass f member second
-  refuses f.founder "requires authorizers" do
+  Fixtures.refuses f.founder "requires authorizers" do
     exerciseCmd f.dao DAO_Execute with proposal = settled; current = []; upTo = 1; featuredAppRight = None
-  refuses f.founder "requires authorizers" do
+  Fixtures.refuses f.founder "requires authorizers" do
     exerciseCmd f.dao DAO_BeginDissolving with proposal = settled
   -- Progress is the DAO's to record: the provider cannot advance a proposal by itself.
-  refuses f.provider "requires authorizers" do
+  Fixtures.refuses f.provider "requires authorizers" do
     exerciseCmd settled Proposal_Advance with upTo = 1
-  refusesAll [f.provider, f.founder] "Progress only goes forward" do
+  Fixtures.refusesAll [f.provider, f.founder] "Progress only goes forward" do
     exerciseCmd settled Proposal_Advance with upTo = 2
   carried <- retain =<< execute f f.dao settled [] 1
   Some live <- queryContractId f.provider carried
   assert (live.id == "dao")
   [(advanced, record)] <- pure . filter (\(_, p) -> p.id == "second") =<< query @Proposal f.provider
   assert (record.executed == 1 && record.executedAt /= None)
-  refusesAll [f.provider, f.founder] "Already executed" do
+  Fixtures.refusesAll [f.provider, f.founder] "Already executed" do
     exerciseCmd advanced Proposal_Advance with upTo = 1
-  refuses f.provider "Already settled" do
+  Fixtures.refuses f.provider "Already settled" do
     exerciseCmd advanced Proposal_Tally with ballots = []; final = True; cast = None

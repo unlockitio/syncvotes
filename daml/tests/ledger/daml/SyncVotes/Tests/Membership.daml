@@ -3,15 +3,15 @@
 module SyncVotes.Tests.Membership where
 
 import Daml.Script
-import SyncVotes.Account
-import SyncVotes.Governance
-import SyncVotes.Tests.Fixtures
-import SyncVotes.Types
+import SyncVotes.Account (Account_CreateDAO (..))
+import SyncVotes.Governance (Member (..), Member_Remove (..), Member_Reshare (..), Member_Comment (..), Member_Propose (..), Comment (..))
+import qualified SyncVotes.Tests.Fixtures as Fixtures
+import SyncVotes.Types (Effect (..))
 
 -- | Only the DAO's authority, creator and provider together, changes a membership.
 removeAndReshare : Script ()
 removeAndReshare = script do
-  f <- foundWith False openSettings openSettings
+  f <- Fixtures.foundWith False Fixtures.openSettings Fixtures.openSettings
   reshared <- submit (actAs [f.provider, f.founder]) do
     exerciseCmd f.member Member_Reshare with share = 5
   None <- queryContractId f.founder f.member
@@ -26,13 +26,13 @@ removeAndReshare = script do
 
 membershipRefusals : Script ()
 membershipRefusals = script do
-  f <- found
-  refuses f.provider "requires authorizers" do exerciseCmd f.member Member_Remove
-  refuses f.founder "requires authorizers" do exerciseCmd f.member Member_Remove
-  refuses f.provider "requires authorizers" do
+  f <- Fixtures.found
+  Fixtures.refuses f.provider "requires authorizers" do exerciseCmd f.member Member_Remove
+  Fixtures.refuses f.founder "requires authorizers" do exerciseCmd f.member Member_Remove
+  Fixtures.refuses f.provider "requires authorizers" do
     exerciseCmd f.member Member_Reshare with share = 2
   -- A membership holds units; none is no membership, and `Member_Remove` is how one leaves.
-  refusesAll [f.provider, f.founder] "Template precondition violated" do
+  Fixtures.refusesAll [f.provider, f.founder] "Template precondition violated" do
     exerciseCmd f.member Member_Reshare with share = 0
   Some intact <- queryContractId f.founder f.member
   assert (intact.share == 1)
@@ -40,13 +40,13 @@ membershipRefusals = script do
 -- | A party outside the DAO cannot see a membership at all, so it cannot act on one.
 outsidersSeeNoMembership : Script ()
 outsidersSeeNoMembership = script do
-  f <- found
-  (other, otherAccount) <- onboard f.provider "other"
+  f <- Fixtures.found
+  (other, otherAccount) <- Fixtures.onboard f.provider "other"
   [] <- query @Member other
-  refuses other "Could not find contract" do
+  Fixtures.refuses other "Could not find contract" do
     exerciseCmd f.member Member_Comment with
       proposalId = "p"; cid = "c"; body = "An outsider's word"
-  refuses other "Could not find contract" do
+  Fixtures.refuses other "Could not find contract" do
     exerciseCmd f.member Member_Propose with
       dao = f.dao; pid = "p"; title = "An outsider's proposal"; description = ""
       action = Signal; rule = None; votingDays = None; featuredAppRight = None
@@ -54,7 +54,7 @@ outsidersSeeNoMembership = script do
   theirDao <- submit other do
     exerciseCmd otherAccount Account_CreateDAO with
       id = "other-dao"; daoName = "Other DAO"; description = ""; image = None
-      equal = True; rules = openSettings; decisions = openSettings
+      equal = True; rules = Fixtures.openSettings; decisions = Fixtures.openSettings
       shares = [(other, 1)]; more = []; actorPays = False
       public = True; featuredAppRight = None
   [(theirMember, _)] <- query @Member other
@@ -63,13 +63,13 @@ outsidersSeeNoMembership = script do
     exerciseCmd theirMember Member_Propose with
       dao = f.dao; pid = "p"; title = "Across DAOs"; description = ""
       action = Signal; rule = None; votingDays = None; featuredAppRight = None)
-    >>= because "Not this member's DAO"
+    >>= Fixtures.because "Not this member's DAO"
   comments <- query @Comment f.provider
   assert (null comments)
 
 commenting : Script ()
 commenting = script do
-  f <- found
+  f <- Fixtures.found
   comment <- submit f.founder do
     exerciseCmd f.member Member_Comment with
       proposalId = "signal"; cid = "c1"; body = "A word on it"
@@ -85,16 +85,44 @@ commenting = script do
   comments <- query @Comment f.founder
   assert (length comments == 2)
 
+archiveMember : Script ()
+archiveMember = script do
+  f <- Fixtures.found
+  Some live <- queryContractId f.founder f.member
+  assert (live.share == 1)
+  Fixtures.refuses f.provider "requires authorizers" do exerciseCmd f.member Archive
+  Some _ <- queryContractId f.founder f.member
+  submit (actAs [f.provider, f.founder]) do exerciseCmd f.member Archive
+  None <- queryContractId f.founder f.member
+  [] <- query @Member f.founder
+  pure ()
+
+archiveComment : Script ()
+archiveComment = script do
+  f <- Fixtures.found
+  cid <- submit f.founder do
+    exerciseCmd f.member Member_Comment with
+      proposalId = "p"; cid = "c"; body = "Recorded"
+  Some live <- queryContractId f.founder cid
+  assert (live.body == "Recorded")
+  trySubmit (actAs f.provider <> readAs f.founder) (do
+    exerciseCmd cid Archive) >>= Fixtures.because "requires authorizers"
+  Some _ <- queryContractId f.founder cid
+  submit (actAs [f.provider, f.founder]) do exerciseCmd cid Archive
+  None <- queryContractId f.founder cid
+  [] <- query @Comment f.founder
+  pure ()
+
 commentRefusals : Script ()
 commentRefusals = script do
-  f <- found
-  refuses f.founder "A comment of one to 5000 characters" do
+  f <- Fixtures.found
+  Fixtures.refuses f.founder "A comment of one to 5000 characters" do
     exerciseCmd f.member Member_Comment with
       proposalId = "signal"; cid = "c"; body = ""
-  refuses f.founder "A comment of one to 5000 characters" do
+  Fixtures.refuses f.founder "A comment of one to 5000 characters" do
     exerciseCmd f.member Member_Comment with
-      proposalId = "signal"; cid = "c"; body = long 5001
-  refuses f.provider "requires authorizers" do
+      proposalId = "signal"; cid = "c"; body = Fixtures.long 5001
+  Fixtures.refuses f.provider "requires authorizers" do
     exerciseCmd f.member Member_Comment with
       proposalId = "signal"; cid = "c"; body = "The provider's word"
   comments <- query @Comment f.provider
