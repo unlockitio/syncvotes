@@ -8,3 +8,4 @@ dependencies:
   - daml-script
 data-dependencies:
   - ../../.daml/dist/syncvotes-1.0.4.dar
+  - ../../lib/splice-api-featured-app-v1-1.0.0.dar

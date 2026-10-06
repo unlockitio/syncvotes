@@ -1,0 +1,140 @@
+module SyncVotes.Tests.Markers where
+
+import Daml.Script
+import DA.Time (addRelTime, days)
+import Splice.Api.FeaturedAppRightV1
+import SyncVotes.Account
+import SyncVotes.Governance
+import SyncVotes.Tests.Fixtures
+import SyncVotes.Types
+
+-- Test-ledger implementation of the packaged Splice interfaces, not a production right.
+template TestRight
+  with
+    dso : Party
+    provider : Party
+    user : Party
+  where
+    signatory provider
+    observer user
+    interface instance FeaturedAppRight for TestRight where
+      view = FeaturedAppRightView with dso; provider
+      featuredAppRight_CreateActivityMarkerImpl _ arg = do
+        cids <- forA arg.beneficiaries \beneficiary -> do
+          cid <- create TestMarker with
+            dso; provider; beneficiary = beneficiary.beneficiary; weight = beneficiary.weight
+          pure (toInterfaceContractId @FeaturedAppActivityMarker cid)
+        pure FeaturedAppRight_CreateActivityMarkerResult with activityMarkerCids = cids
+
+template TestMarker
+  with
+    dso : Party
+    provider : Party
+    beneficiary : Party
+    weight : Decimal
+  where
+    signatory provider
+    interface instance FeaturedAppActivityMarker for TestMarker where
+      view = FeaturedAppActivityMarkerView with dso; provider; beneficiary; weight
+
+rightFor : Party -> Party -> Party -> Script (ContractId FeaturedAppRight)
+rightFor dso provider user = do
+  cid <- submit provider do createCmd TestRight with dso; provider; user
+  pure (toInterfaceContractId @FeaturedAppRight cid)
+
+markers : Party -> Script [FeaturedAppActivityMarkerView]
+markers provider = do
+  found <- queryInterface @FeaturedAppActivityMarker provider
+  forA found \(_, record) -> case record of
+    Some marker -> pure marker
+    None -> abort "Marker interface view missing"
+
+checkMarkers : Party -> Party -> Int -> Script ()
+checkMarkers dso provider count = do
+  found <- markers provider
+  assert (length found == count)
+  assert (all (\m -> m.dso == dso && m.provider == provider && m.beneficiary == provider && m.weight == 1.0) found)
+
+-- Every creation is counted on the actual activity-marker interface; another provider's
+-- right is rejected by SyncVotes before its interface choice is exercised.
+creationAndProviderGuard : Script ()
+creationAndProviderGuard = script do
+  dso <- allocateParty "dso"
+  provider <- allocateParty "provider"
+  founder <- allocateParty "founder"
+  other <- allocateParty "other-provider"
+  account <- submit provider do createCmd Account with provider; user = founder
+  right <- rightFor dso provider founder
+  wrong <- rightFor dso other founder
+  refuses founder "Not this app's featured app right" do
+    exerciseCmd account Account_CreateDAO with
+      id = "wrong"; daoName = "Wrong"; description = ""; image = None
+      equal = True; rules = openSettings; decisions = openSettings
+      shares = [(founder, 1)]; more = []; actorPays = False; public = True
+      featuredAppRight = Some wrong
+  [] <- query @DAO provider
+  checkMarkers dso provider 0
+  dao <- submit founder do
+    exerciseCmd account Account_CreateDAO with
+      id = "dao"; daoName = "DAO"; description = ""; image = None
+      equal = True; rules = openSettings; decisions = openSettings
+      shares = [(founder, 1)]; more = []; actorPays = False; public = True
+      featuredAppRight = Some right
+  Some _ <- queryContractId provider dao
+  checkMarkers dso provider 1
+  [(member, _)] <- query @Member founder
+  proposal <- submit founder do
+    exerciseCmd member Member_Propose with
+      dao; pid = "vote"; title = "Vote"; description = ""; action = Signal
+      rule = Some (openRule with changeable = True); votingDays = None
+      featuredAppRight = Some right
+  checkMarkers dso provider 2
+  Some p <- queryContractId provider proposal
+  first <- submit founder do
+    exerciseCmd member Member_Cast with
+      proposalId = "vote"; closesAt = p.closesAt; changeable = True; vote = Yes
+      previous = None; previousV1 = None; featuredAppRight = Some right
+  checkMarkers dso provider 3
+  [(nextMember, _)] <- query @Member founder
+  second <- submit founder do
+    exerciseCmd nextMember Member_Cast with
+      proposalId = "vote"; closesAt = p.closesAt; changeable = True; vote = No
+      previous = Some first; previousV1 = None; featuredAppRight = Some right
+  None <- queryContractId provider first
+  Some _ <- queryContractId provider second
+  checkMarkers dso provider 3
+  setTime (addRelTime p.closesAt (days 1))
+  passed <- submit provider do
+    exerciseCmd proposal Proposal_Tally with ballots = []; final = True; cast = Some [second]
+  Some settled <- queryContractId provider passed
+  assert (settled.outcome == Some Failed)
+  -- A separate, passed share change requires two batches. Only completion marks.
+  [(current, _)] <- query @Member founder
+  (joiner, _) <- onboard provider "joiner"
+  change <- submit founder do
+    exerciseCmd current Member_Propose with
+      dao; pid = "shares"; title = "Shares"; description = ""
+      action = SetShares [(founder, 1), (joiner, 1)]
+      rule = None; votingDays = None; featuredAppRight = None
+  Some shareProposal <- queryContractId provider change
+  ballot <- submit founder do
+    exerciseCmd current Member_Cast with
+      proposalId = "shares"; closesAt = shareProposal.closesAt; changeable = False
+      vote = Yes; previous = None; previousV1 = None; featuredAppRight = None
+  setTime (addRelTime shareProposal.closesAt (days 1))
+  accepted <- submit provider do
+    exerciseCmd change Proposal_Tally with ballots = []; final = True; cast = Some [ballot]
+  Some result <- queryContractId provider accepted
+  assert (result.outcome == Some Passed)
+  [(liveMember, _)] <- query @Member founder
+  firstBatch <- submit provider do
+    exerciseCmd dao DAO_Execute with
+      proposal = accepted; current = [liveMember]; upTo = 1; featuredAppRight = Some right
+  Some daoNext <- pure firstBatch
+  checkMarkers dso provider 3
+  [(progress, _)] <- pure . filter (\(_, x) -> x.id == "shares") =<< query @Proposal provider
+  lastBatch <- submit provider do
+    exerciseCmd daoNext DAO_Execute with
+      proposal = progress; current = []; upTo = 2; featuredAppRight = Some right
+  Some _ <- pure lastBatch
+  checkMarkers dso provider 4
