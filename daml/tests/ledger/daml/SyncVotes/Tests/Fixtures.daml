@@ -1,0 +1,74 @@
+-- | What every test here starts from: a provider, the parties it has given accounts, a founded
+-- DAO, and the two ways a submission can be refused.
+module SyncVotes.Tests.Fixtures where
+
+import Daml.Script
+import qualified DA.Text as T
+import SyncVotes.Account
+import SyncVotes.Governance
+import SyncVotes.Types
+
+-- | A rule that decides nothing by itself: a simple majority of the whole vote, no quorum, no
+-- early settlement, ballots that cannot change. Tests that care about a rule set their own.
+openRule : Rule
+openRule = Rule with
+  basis = OfAll; threshold = Majority; quorum = 0; early = False
+  changeable = False; secret = False
+
+openSettings : Settings
+openSettings = Settings with rule = openRule; votingDays = 1
+
+-- | A DAO as a test finds it: who signs it, who founded it, and the founder's membership.
+data Founded = Founded with
+    provider : Party
+    founder : Party
+    account : ContractId Account
+    dao : ContractId DAO
+    member : ContractId Member
+
+-- | A party with an account on this provider.
+onboard : Party -> Text -> Script (Party, ContractId Account)
+onboard provider name = do
+  user <- allocateParty name
+  account <- submit provider do createCmd Account with provider; user
+  pure (user, account)
+
+-- | A DAO whose founder holds its only share, under the rules given.
+foundWith : Bool -> Settings -> Settings -> Script Founded
+foundWith equal rules decisions = do
+  provider <- allocateParty "provider"
+  (founder, account) <- onboard provider "founder"
+  dao <- submit founder do
+    exerciseCmd account Account_CreateDAO with
+      id = "dao"; daoName = "Test DAO"; description = ""; image = None
+      equal; rules; decisions; shares = [(founder, 1)]; more = []
+      actorPays = False; public = True; featuredAppRight = None
+  [(member, _)] <- query @Member founder
+  pure Founded with provider; founder; account; dao; member
+
+-- | The DAO most tests want: one member, one unit, one vote by simple majority.
+found : Script Founded
+found = foundWith True openSettings openSettings
+
+-- | A submission that must be refused, with the words the contract says when it refuses. A
+-- refusal for any other reason is as much a failure as acceptance: it would leave the rule
+-- under test unproven.
+refuses : Party -> Text -> Commands a -> Script ()
+refuses party said cmds = trySubmit party cmds >>= because said
+
+-- | As `refuses`, for a choice that several parties must authorise together.
+refusesAll : [Party] -> Text -> Commands a -> Script ()
+refusesAll actors said cmds = trySubmit (actAs actors) cmds >>= because said
+
+because : Text -> Either SubmitError a -> Script ()
+because said outcome = case outcome of
+  Right _ -> abort ("The ledger accepted what it must refuse: " <> said)
+  Left err -> do
+    let reason = show err
+    assertMsg
+      ("Refused, but not for \"" <> said <> "\"; it said: " <> reason)
+      (said `T.isInfixOf` reason)
+
+-- | A text of `n` characters, for the lengths the ledger refuses.
+long : Int -> Text
+long n = T.implode (map (const "x") [1 .. n])

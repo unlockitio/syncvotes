@@ -1,0 +1,101 @@
+-- | A membership is the door a member proposes, votes and comments through, and the DAO's
+-- authority is what opens and closes it.
+module SyncVotes.Tests.Membership where
+
+import Daml.Script
+import SyncVotes.Account
+import SyncVotes.Governance
+import SyncVotes.Tests.Fixtures
+import SyncVotes.Types
+
+-- | Only the DAO's authority, creator and provider together, changes a membership.
+removeAndReshare : Script ()
+removeAndReshare = script do
+  f <- foundWith False openSettings openSettings
+  reshared <- submit (actAs [f.provider, f.founder]) do
+    exerciseCmd f.member Member_Reshare with share = 5
+  None <- queryContractId f.founder f.member
+  Some bigger <- queryContractId f.founder reshared
+  assert (bigger.share == 5 && bigger.party == f.founder)
+  assert (bigger.shareSince >= bigger.since)
+  submit (actAs [f.provider, f.founder]) do
+    exerciseCmd reshared Member_Remove
+  None <- queryContractId f.founder reshared
+  [] <- query @Member f.founder
+  pure ()
+
+membershipRefusals : Script ()
+membershipRefusals = script do
+  f <- found
+  refuses f.provider "requires authorizers" do exerciseCmd f.member Member_Remove
+  refuses f.founder "requires authorizers" do exerciseCmd f.member Member_Remove
+  refuses f.provider "requires authorizers" do
+    exerciseCmd f.member Member_Reshare with share = 2
+  -- A membership holds units; none is no membership, and `Member_Remove` is how one leaves.
+  refusesAll [f.provider, f.founder] "Template precondition violated" do
+    exerciseCmd f.member Member_Reshare with share = 0
+  Some intact <- queryContractId f.founder f.member
+  assert (intact.share == 1)
+
+-- | A party outside the DAO cannot see a membership at all, so it cannot act on one.
+outsidersSeeNoMembership : Script ()
+outsidersSeeNoMembership = script do
+  f <- found
+  (other, otherAccount) <- onboard f.provider "other"
+  [] <- query @Member other
+  refuses other "Could not find contract" do
+    exerciseCmd f.member Member_Comment with
+      proposalId = "p"; cid = "c"; body = "An outsider's word"
+  refuses other "Could not find contract" do
+    exerciseCmd f.member Member_Propose with
+      dao = f.dao; pid = "p"; title = "An outsider's proposal"; description = ""
+      action = Signal; rule = None; votingDays = None; featuredAppRight = None
+  -- Nor does an account of its own let it in.
+  theirDao <- submit other do
+    exerciseCmd otherAccount Account_CreateDAO with
+      id = "other-dao"; daoName = "Other DAO"; description = ""; image = None
+      equal = True; rules = openSettings; decisions = openSettings
+      shares = [(other, 1)]; more = []; actorPays = False
+      public = True; featuredAppRight = None
+  [(theirMember, _)] <- query @Member other
+  -- Even with the other DAO in view, its own membership is no standing there.
+  trySubmit (actAs other <> readAs f.provider) (do
+    exerciseCmd theirMember Member_Propose with
+      dao = f.dao; pid = "p"; title = "Across DAOs"; description = ""
+      action = Signal; rule = None; votingDays = None; featuredAppRight = None)
+    >>= because "Not this member's DAO"
+  comments <- query @Comment f.provider
+  assert (null comments)
+
+commenting : Script ()
+commenting = script do
+  f <- found
+  comment <- submit f.founder do
+    exerciseCmd f.member Member_Comment with
+      proposalId = "signal"; cid = "c1"; body = "A word on it"
+  Some said <- queryContractId f.founder comment
+  assert (said.author == f.founder && said.body == "A word on it")
+  assert (said.daoId == "dao" && said.proposalId == "signal")
+  -- A comment is nonconsuming: the membership stays, and a second word is a second comment.
+  Some member <- queryContractId f.founder f.member
+  assert (member.share == 1)
+  _ <- submit f.founder do
+    exerciseCmd f.member Member_Comment with
+      proposalId = "signal"; cid = "c2"; body = "And another"
+  comments <- query @Comment f.founder
+  assert (length comments == 2)
+
+commentRefusals : Script ()
+commentRefusals = script do
+  f <- found
+  refuses f.founder "A comment of one to 5000 characters" do
+    exerciseCmd f.member Member_Comment with
+      proposalId = "signal"; cid = "c"; body = ""
+  refuses f.founder "A comment of one to 5000 characters" do
+    exerciseCmd f.member Member_Comment with
+      proposalId = "signal"; cid = "c"; body = long 5001
+  refuses f.provider "requires authorizers" do
+    exerciseCmd f.member Member_Comment with
+      proposalId = "signal"; cid = "c"; body = "The provider's word"
+  comments <- query @Comment f.provider
+  assert (null comments)
