@@ -1,0 +1,70 @@
+-- | Tally arithmetic at its boundaries, without manufacturing ledger contracts for every
+-- combination of electorate, rule and option.
+module SyncVotes.Tests.Tally where
+
+import Daml.Script
+import SyncVotes.Rules
+import SyncVotes.Tally
+import SyncVotes.Tests.Fixtures
+import SyncVotes.Types
+
+empty : Counts
+empty = Counts with yes = 0; no = 0; abstain = 0; tallies = []; picked = 0
+
+-- | Abstention contributes to quorum, but not the OfCast denominator for yes/no.
+quorumAndThreshold : Script ()
+quorumAndThreshold = script do
+  let rule = openRule with basis = OfCast; quorum = 60
+      votes = add 1 Abstain (add 2 Yes (add 1 No empty))
+  assert (decide rule Signal 5 votes True == Some Passed)
+  assert (decide (rule with quorum = 100) Signal 5 votes True == Some Failed)
+  assert (decide (rule with basis = OfAll) Signal 5 votes True == Some Failed)
+  assert (decide (rule with threshold = Percent 67; quorum = 0) Signal 5 votes True == Some Failed)
+  assert (decide (rule with threshold = Fraction 2 3; quorum = 0) Signal 5 votes True == Some Passed)
+  assert (not (meets Majority 1 2) && meets Majority 2 3)
+  assert (not (meets (Percent 50) 0 0))
+
+-- | Early settlement requires an irreversible result, including quorum and outstanding votes.
+earlyOutcomes : Script ()
+earlyOutcomes = script do
+  let rule = openRule with early = True
+  assert (decide rule Signal 5 (empty with yes = 3) False == Some Passed)
+  assert (decide rule Signal 5 (empty with no = 3) False == Some Failed)
+  assert (decide rule Signal 5 (empty with yes = 2) False == None)
+  assert (decide (rule with quorum = 100) Signal 5 (empty with yes = 3) False == None)
+  assert (decide (rule with quorum = 100) Signal 5 (empty with yes = 3) True == Some Failed)
+  assert (decide openRule Signal 5 (empty with yes = 5) False == None)
+  assert (decide openRule Signal 5 (empty with yes = 5) True == Some Passed)
+
+-- | One option must lead alone; several options each independently meet their threshold.
+choiceOutcomes : Script ()
+choiceOutcomes = script do
+  let one = Choose with options = ["A", "B", "C"]; several = False
+      many = Choose with options = ["A", "B", "C"]; several = True
+      rule = openRule with basis = OfCast
+      counts = add 2 (Pick 0) (add 1 (Pick 1) (empty with tallies = [0, 0, 0]))
+  assert (counts.tallies == [2, 1, 0] && counts.picked == 3)
+  assert (decide rule one 3 counts True == Some (Chosen 0))
+  assert (decide rule one 3 (counts with tallies = [1, 1, 0]) True == Some Failed)
+  assert (decide (rule with threshold = Percent 80) one 3 counts True == Some Failed)
+  let picks = add 2 (PickMany [0, 2]) (add 1 (PickMany [1]) (empty with tallies = [0, 0, 0]))
+  assert (picks.tallies == [2, 1, 2] && picks.picked == 3)
+  assert (decide rule many 3 picks True == Some (ChosenMany [0, 2]))
+  assert (decide (rule with threshold = Percent 100) many 3 picks True == Some Failed)
+  assert (decide (rule with early = True) many 3 picks False == Some (ChosenMany [0, 2]))
+  assert (decide (rule with early = True) one 5 counts False == None)
+
+-- | Rules and options are validated at their limits before a proposal is created.
+ruleBoundaries : Script ()
+ruleBoundaries = script do
+  assert (validRule (openRule with threshold = Percent 1; quorum = 100))
+  assert (validRule (openRule with threshold = Fraction 1 100))
+  assert (not (validRule (openRule with threshold = Fraction 0 1)))
+  assert (not (validRule (openRule with threshold = Fraction 1 101)))
+  assert (not (validRule (openRule with quorum = -1)))
+  assert (not (validRule (openRule with early = True; changeable = True)))
+  assert (validSettings (openSettings with votingDays = 90))
+  assert (not (validSettings (openSettings with votingDays = 91)))
+  assert (validOptions ["A", "B"] && not (validOptions ["A", "A"]))
+  assert (not (changesDao Signal) && not (changesDao (Choose with options = ["A", "B"]; several = False)))
+  assert (changesDao Dissolve)

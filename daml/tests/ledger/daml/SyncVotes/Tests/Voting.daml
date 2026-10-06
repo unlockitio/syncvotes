@@ -1,0 +1,155 @@
+-- | Votes are recorded separately from counting: casting can be mistaken, but the count checks
+-- the proposal, electorate, deadline, rule and kind of vote before accepting any ballot.
+module SyncVotes.Tests.Voting where
+
+import Daml.Script
+import DA.Time (addRelTime, days)
+import SyncVotes.Governance
+import SyncVotes.Tests.Fixtures
+import SyncVotes.Types
+
+propose : Founded -> Text -> Effect -> Optional Rule -> Script (ContractId Proposal, Proposal)
+propose f pid action rule = do
+  [(member, _)] <- query @Member f.founder
+  cid <- submit f.founder do
+    exerciseCmd member Member_Propose with
+      dao = f.dao; pid; title = "Vote"; description = ""; action; rule
+      votingDays = None; featuredAppRight = None
+  Some p <- queryContractId f.provider cid
+  pure (cid, p)
+
+voteV1 : Founded -> ContractId Member -> Text -> Time -> Bool -> Vote -> Optional (ContractId Ballot) -> Script (ContractId Ballot)
+voteV1 f member proposalId closesAt changeable vote previous =
+  submit f.founder do
+    exerciseCmd member Member_Vote with
+      proposalId; closesAt; changeable; vote; previous; featuredAppRight = None
+
+voteV2 : Founded -> ContractId Member -> Text -> Time -> Bool -> Vote -> Optional (ContractId BallotV2) -> Optional (ContractId Ballot) -> Script (ContractId BallotV2)
+voteV2 f member proposalId closesAt changeable vote previous previousV1 =
+  submit f.founder do
+    exerciseCmd member Member_Cast with
+      proposalId; closesAt; changeable; vote; previous; previousV1; featuredAppRight = None
+
+-- | Both generations count, once each; the proposal counts units, not the number of ballots.
+bothBallotsCount : Script ()
+bothBallotsCount = script do
+  f <- found
+  (pid, p) <- propose f "p" Signal None
+  first <- voteV1 f f.member "p" p.closesAt False Yes None
+  [(member, _)] <- query @Member f.founder
+  (otherPid, other) <- propose f "other" Signal None
+  second <- voteV2 f member "other" other.closesAt False No None None
+  counted <- submit f.provider do
+    exerciseCmd pid Proposal_Tally with
+      ballots = [first]; final = False; cast = None
+  Some interim <- queryContractId f.provider counted
+  assert (interim.yes == 1 && interim.outcome == None)
+  countedOther <- submit f.provider do
+    exerciseCmd otherPid Proposal_Tally with
+      ballots = []; final = False; cast = Some [second]
+  Some otherInterim <- queryContractId f.provider countedOther
+  assert (otherInterim.no == 1 && otherInterim.outcome == None)
+  [(oldId, old)] <- query @Ballot f.provider
+  [(modernId, modern)] <- query @BallotV2 f.provider
+  assert (old.counted && modern.counted)
+  -- A second count of either marked ballot reaches its own guard, not a settled-proposal guard.
+  refuses f.provider "Already counted" do exerciseCmd oldId Ballot_Count with proposal = interim
+  refuses f.provider "Already counted" do exerciseCmd modernId BallotV2_Count with proposal = otherInterim
+
+-- | An unchangeable ballot cannot be replaced; replacing requires the actual current ballot.
+replacementAndWithdrawal : Script ()
+replacementAndWithdrawal = script do
+  f <- found
+  (_, p) <- propose f "fixed" Signal None
+  fixed <- voteV1 f f.member "fixed" p.closesAt False Yes None
+  [(member, _)] <- query @Member f.founder
+  refuses f.founder "Already voted; votes on this proposal cannot be changed" do
+    exerciseCmd member Member_Vote with
+      proposalId = "fixed"; closesAt = p.closesAt; changeable = False; vote = No
+      previous = Some fixed; featuredAppRight = None
+  refuses f.founder "Votes on this proposal cannot be changed" do exerciseCmd fixed Ballot_Withdraw
+  (changingId, changing) <- propose f "changing" Signal (Some (openRule with changeable = True))
+  first <- voteV1 f member "changing" changing.closesAt True Yes None
+  [(member2, _)] <- query @Member f.founder
+  refuses f.founder "Already voted; hand in the ballot to replace" do
+    exerciseCmd member2 Member_Vote with
+      proposalId = "changing"; closesAt = changing.closesAt; changeable = True
+      vote = No; previous = None; featuredAppRight = None
+  second <- voteV1 f member2 "changing" changing.closesAt True No (Some first)
+  None <- queryContractId f.provider first
+  [(member3, _)] <- query @Member f.founder
+  modern <- voteV2 f member3 "changing" changing.closesAt True Abstain None (Some second)
+  None <- queryContractId f.provider second
+  [(member4, _)] <- query @Member f.founder
+  refuses f.founder "Already voted; hand in the one ballot to replace" do
+    exerciseCmd member4 Member_Cast with
+      proposalId = "changing"; closesAt = changing.closesAt; changeable = True
+      vote = Yes; previous = None; previousV1 = None; featuredAppRight = None
+  next <- voteV2 f member4 "changing" changing.closesAt True Yes (Some modern) None
+  None <- queryContractId f.provider modern
+  Some live <- queryContractId f.provider next
+  assert (live.vote == Yes && not live.counted)
+  refuses f.provider "Votes may change until the deadline" do
+    exerciseCmd changingId Proposal_Tally with ballots = []; final = False; cast = None
+  setTime (addRelTime changing.closesAt (days 1))
+  settled <- submit f.provider do
+    exerciseCmd changingId Proposal_Tally with
+      ballots = []; final = True; cast = Some [next]
+  Some result <- queryContractId f.provider settled
+  assert (result.yes == 1 && result.outcome == Some Passed)
+  [(countedId, countedBallot)] <- query @BallotV2 f.provider
+  assert countedBallot.counted
+  refuses f.founder "Already counted" do exerciseCmd countedId BallotV2_Withdraw
+
+-- | A vote can be cast without consulting a proposal; an invalid ballot is rejected when counted.
+countGuards : Script ()
+countGuards = script do
+  f <- found
+  (_, p) <- propose f "right" Signal None
+  (otherId, other) <- propose f "other" Signal None
+  wrong <- voteV2 f f.member "wrong" p.closesAt False Yes None None
+  refuses f.provider "A ballot for another proposal" do exerciseCmd wrong BallotV2_Count with proposal = p
+  -- The voter may lie about the closing time and rule, but cannot make it count.
+  [(member, _)] <- query @Member f.founder
+  deadline <- voteV1 f member "right" (addRelTime p.closesAt (days 1)) False Yes None
+  refuses f.provider "Cast against another deadline" do exerciseCmd deadline Ballot_Count with proposal = p
+  [(nextMember, _)] <- query @Member f.founder
+  rule <- voteV2 f nextMember "other" other.closesAt True Yes None None
+  refuses f.provider "Cast against another rule" do exerciseCmd rule BallotV2_Count with proposal = other
+  -- The separate proposal has a different id even though it shares this DAO.
+  refuses f.provider "A ballot for another proposal" do exerciseCmd rule BallotV2_Count with proposal = p
+  Some untouched <- queryContractId f.provider otherId
+  assert (untouched.yes == 0)
+
+-- | Counterfeit ballots remain syntactically valid contracts, but cannot pass the count's
+-- independent checks. Both ballot kinds use the same checks.
+countableBoundaries : Script ()
+countableBoundaries = script do
+  f <- found
+  (_, p) <- propose f "p" Signal None
+  original <- voteV2 f f.member "p" p.closesAt False Yes None None
+  Some b <- queryContractId f.provider original
+  let check said changed = do
+        cid <- submit (actAs [f.provider, f.founder]) do createCmd changed
+        refuses f.provider said do exerciseCmd cid BallotV2_Count with proposal = p
+  check "Cast after the deadline" (b with castAt = p.closesAt)
+  check "Cast against another deadline" (b with closesAt = addRelTime p.closesAt (days 1))
+  check "Joined after the vote opened" (b with since = addRelTime p.createdAt (days 1))
+  check "The share changed after the vote opened" (b with shareSince = addRelTime p.createdAt (days 1))
+  check "This proposal takes yes or no, not an option" (b with vote = Pick 0)
+  check "This proposal takes yes or no, not options" (b with vote = PickMany [0])
+  check "A ballot under another authority" (b with creator = f.provider)
+  (choiceId, choice) <- propose f "choice" (Choose with options = ["A", "B"]; several = False) None
+  let checkChoice said vote = do
+        cid <- submit (actAs [f.provider, f.founder]) do
+          createCmd (b with proposalId = "choice"; vote)
+        refuses f.provider said do exerciseCmd cid BallotV2_Count with proposal = choice
+  checkChoice "No such option" (Pick 2)
+  checkChoice "This proposal takes one option" (PickMany [0])
+  checkChoice "This proposal is a choice among options, not yes or no" Yes
+  let many = choice with action = Choose with options = ["A", "B"]; several = True
+  checkMany <- submit (actAs [f.provider, f.founder]) do
+    createCmd (b with proposalId = "choice"; vote = PickMany [0, 0])
+  refuses f.provider "An option picked twice" do exerciseCmd checkMany BallotV2_Count with proposal = many
+  Some intact <- queryContractId f.provider choiceId
+  assert (intact.tallies == [0, 0])
