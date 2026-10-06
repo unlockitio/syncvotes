@@ -1,0 +1,53 @@
+module SyncVotes.Tests.Lifecycle where
+
+import Daml.Script
+import DA.Time (addRelTime, days)
+import SyncVotes.Account
+import SyncVotes.Governance
+import SyncVotes.Types
+
+lifecycle : Script ()
+lifecycle = script do
+  provider <- allocateParty "provider"
+  founder <- allocateParty "founder"
+  let rule = Rule with
+        basis = OfAll; threshold = Majority; quorum = 0; early = False
+        changeable = False; secret = False
+      settings = Settings with rule; votingDays = 1
+  account <- submit provider do
+    createCmd Account with provider; user = founder
+  dao <- submit founder do
+    exerciseCmd account Account_CreateDAO with
+      id = "dao"; daoName = "Test DAO"; description = ""; image = None
+      equal = True; rules = settings; decisions = settings
+      shares = [(founder, 1)]; more = []; actorPays = False
+      public = True; featuredAppRight = None
+  [(member, _)] <- query @Member provider
+  proposal <- submit founder do
+    exerciseCmd member Member_Propose with
+      dao; pid = "signal"; title = "A decision"; description = ""
+      action = Signal; rule = None; votingDays = None; featuredAppRight = None
+  Some proposed <- queryContractId provider proposal
+  let closesAt = proposed.closesAt
+  ballot <- submit founder do
+    exerciseCmd member Member_Cast with
+      proposalId = "signal"; closesAt; changeable = False; vote = Yes
+      previous = None; previousV1 = None; featuredAppRight = None
+  [(_, recorded)] <- query @BallotV2 provider
+  assert (recorded.voter == founder && recorded.vote == Yes && not recorded.counted)
+  setTime (addRelTime closesAt (days 1))
+  tallied <- submit provider do
+    exerciseCmd proposal Proposal_Tally with
+      ballots = []; final = True; cast = Some [ballot]
+  Some result <- queryContractId provider tallied
+  assert (result.yes == 1 && result.outcome == Some Passed)
+  nextDao <- submit provider do
+    exerciseCmd dao DAO_Execute with
+      proposal = tallied; current = []; upTo = 1; featuredAppRight = None
+  case nextDao of
+    None -> abort "A signal must retain its DAO"
+    Some cid -> do
+      Some live <- queryContractId provider cid
+      assert (live.id == "dao" && live.members == 1 && live.units == 1)
+  [(_, executed)] <- query @Proposal provider
+  assert (executed.executed == 1 && executed.executedAt /= None)
