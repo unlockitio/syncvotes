@@ -1,4 +1,4 @@
--- | What a member may propose: which rule it runs under, and what the ledger Fixtures.refuses to put to
+-- | What a member may propose: which rule it runs under, and what the ledger refuses to put to
 -- a vote.
 module SyncVotes.Tests.Proposals where
 
@@ -13,11 +13,11 @@ propose f pid action rule votingDays = exerciseCmd f.member Member_Propose with
   dao = f.dao; pid; title = "A proposal"; description = ""
   action; rule; votingDays; featuredAppRight = None
 
--- | A decision takes the DAO's default for a decision, and the proposer may set another.
+-- | A signal takes the DAO's decision rule and deadline unless the proposer overrides them.
 decisionTakesItsOwnRule : Script ()
 decisionTakesItsOwnRule = script do
   let decisions = Settings with rule = (Fixtures.openRule with quorum = 10); votingDays = 7
-  f <- Fixtures.foundWith True Fixtures.openSettings decisions
+  f <- Fixtures.foundDAOWithSettings True Fixtures.openSettings decisions
   byDefault <- submit f.founder do propose f "default" Signal None None
   Some asIs <- queryContractId f.founder byDefault
   assert (asIs.rule == decisions.rule && asIs.eligible == 1)
@@ -29,10 +29,10 @@ decisionTakesItsOwnRule = script do
   assert (set.rule == mine)
   assert (set.closesAt == addRelTime set.createdAt (days 3))
 
--- | A choice carries one tally per option and no yes or no.
+-- | A choice starts with one zero tally per option and no picked votes.
 choiceCarriesTallies : Script ()
 choiceCarriesTallies = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   let options = ["First", "Second", "Third"]
   proposal <- submit f.founder do
     propose f "choice" (Choose with options; several = False) None None
@@ -40,11 +40,11 @@ choiceCarriesTallies = script do
   assert (put.tallies == [0, 0, 0] && put.picked == 0)
   assert (put.action == Choose with options; several = False)
 
--- | A change to the DAO runs under the DAO's own voting rules, not the proposer's.
+-- | DAO changes use its voting rule and deadline; proposer overrides are refused.
 daoChangesTakeTheDaoRules : Script ()
 daoChangesTakeTheDaoRules = script do
   let rules = Settings with rule = (Fixtures.openRule with threshold = Percent 80); votingDays = 14
-  f <- Fixtures.foundWith True rules Fixtures.openSettings
+  f <- Fixtures.foundDAOWithSettings True rules Fixtures.openSettings
   proposal <- submit f.founder do
     propose f "rename" (SetInfo with daoName = "Renamed"; description = "New"; image = None) None None
   Some change <- queryContractId f.founder proposal
@@ -55,9 +55,10 @@ daoChangesTakeTheDaoRules = script do
   Fixtures.refuses f.founder "A proposal that changes the DAO runs under the DAO's voting rules" do
     propose f "hurried" (SetPublic with public = False) None (Some 1)
 
+-- | Invalid text, voting periods and rule bounds or unauthorized proposals create no proposal.
 proposalRefusals : Script ()
 proposalRefusals = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   Fixtures.refuses f.founder "A title of one to 120 characters" do
     exerciseCmd f.member Member_Propose with
       dao = f.dao; pid = "p"; title = ""; description = ""
@@ -87,9 +88,10 @@ proposalRefusals = script do
   proposals <- query @Proposal f.provider
   assert (null proposals)
 
+-- | Too few, too many, duplicate or malformed choice options create no proposal.
 choiceRefusals : Script ()
 choiceRefusals = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   let choice options several = propose f "p" (Choose with options; several) None None
   Fixtures.refuses f.founder "Two to ten distinct options" do choice ["Only one"] False
   Fixtures.refuses f.founder "Two to ten distinct options" do
@@ -100,9 +102,10 @@ choiceRefusals = script do
   proposals <- query @Proposal f.provider
   assert (null proposals)
 
+-- | Invalid DAO settings, metadata and share changes are refused without a proposal.
 effectRefusals : Script ()
 effectRefusals = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   (other, _) <- Fixtures.onboard f.provider "other"
   let bad = Fixtures.openSettings with votingDays = 0
   Fixtures.refuses f.founder "The voting rules' numbers are out of range" do
@@ -130,10 +133,10 @@ effectRefusals = script do
   proposals <- query @Proposal f.provider
   assert (null proposals)
 
--- | By shares a member may hold many units; only a DAO voting by membership is capped at one.
+-- | A share-change proposal can grant seven units to one party when voting is by units.
 sharesByUnitsAreAllowed : Script ()
 sharesByUnitsAreAllowed = script do
-  f <- Fixtures.foundWith False Fixtures.openSettings Fixtures.openSettings
+  f <- Fixtures.foundDAOWithSettings False Fixtures.openSettings Fixtures.openSettings
   (other, _) <- Fixtures.onboard f.provider "other"
   proposal <- submit f.founder do
     propose f "shares" (SetShares with changes = [(other, 7)]) None None

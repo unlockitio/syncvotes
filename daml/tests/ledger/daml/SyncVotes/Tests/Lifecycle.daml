@@ -6,6 +6,7 @@ import SyncVotes.Account (Account (..), Account_CreateDAO (..))
 import SyncVotes.Governance (DAO_Execute (..), Member (..), Member_Propose (..), Member_Cast (..), BallotV2 (..), Proposal (..), Proposal_Tally (..))
 import SyncVotes.Types (Rule (..), Basis (..), Threshold (..), Settings (..), Effect (..), Vote (..), Outcome (..))
 
+-- | Founding, proposing, voting and tallying a signal passes and executes without removing the DAO.
 lifecycle : Script ()
 lifecycle = script do
   provider <- allocateParty "provider"

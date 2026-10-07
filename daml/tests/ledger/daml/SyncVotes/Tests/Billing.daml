@@ -7,6 +7,7 @@ import DA.Time (addRelTime, days)
 import SyncVotes.Billing (Meter (..), Meter_Update (..), Purse (..), Purse_Update (..))
 import qualified SyncVotes.Tests.Fixtures as Fixtures
 
+-- | Only the provider can archive meter and purse statements; both disappear afterward.
 archiveStatements : Script ()
 archiveStatements = script do
   provider <- allocateParty "provider"
@@ -33,6 +34,7 @@ archiveStatements = script do
   [] <- query @Purse provider
   pure ()
 
+-- | Only provider updates replace statements, preserving keys and recording new amounts and time.
 statements : Script ()
 statements = script do
   provider <- allocateParty "provider"

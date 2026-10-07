@@ -8,10 +8,10 @@ import SyncVotes.Governance (Member (..), Member_Remove (..), Member_Reshare (..
 import qualified SyncVotes.Tests.Fixtures as Fixtures
 import SyncVotes.Types (Effect (..))
 
--- | Only the DAO's authority, creator and provider together, changes a membership.
+-- | Creator and provider together reshare then remove a member, consuming each old membership.
 removeAndReshare : Script ()
 removeAndReshare = script do
-  f <- Fixtures.foundWith False Fixtures.openSettings Fixtures.openSettings
+  f <- Fixtures.foundDAOWithSettings False Fixtures.openSettings Fixtures.openSettings
   reshared <- submit (actAs [f.provider, f.founder]) do
     exerciseCmd f.member Member_Reshare with share = 5
   None <- queryContractId f.founder f.member
@@ -24,9 +24,10 @@ removeAndReshare = script do
   [] <- query @Member f.founder
   pure ()
 
+-- | Either authority alone and a zero-share reshare are refused; the member retains one share.
 membershipRefusals : Script ()
 membershipRefusals = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   Fixtures.refuses f.provider "requires authorizers" do exerciseCmd f.member Member_Remove
   Fixtures.refuses f.founder "requires authorizers" do exerciseCmd f.member Member_Remove
   Fixtures.refuses f.provider "requires authorizers" do
@@ -37,10 +38,10 @@ membershipRefusals = script do
   Some intact <- queryContractId f.founder f.member
   assert (intact.share == 1)
 
--- | A party outside the DAO cannot see a membership at all, so it cannot act on one.
+-- | An outsider cannot see or use this DAO's membership, even after founding another DAO.
 outsidersSeeNoMembership : Script ()
 outsidersSeeNoMembership = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   (other, otherAccount) <- Fixtures.onboard f.provider "other"
   [] <- query @Member other
   Fixtures.refuses other "Could not find contract" do
@@ -67,9 +68,10 @@ outsidersSeeNoMembership = script do
   comments <- query @Comment f.provider
   assert (null comments)
 
+-- | A member posts two comments without consuming membership; both record the author and DAO.
 commenting : Script ()
 commenting = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   comment <- submit f.founder do
     exerciseCmd f.member Member_Comment with
       proposalId = "signal"; cid = "c1"; body = "A word on it"
@@ -85,9 +87,10 @@ commenting = script do
   comments <- query @Comment f.founder
   assert (length comments == 2)
 
+-- | Provider-only archive is refused; joint authority removes the membership.
 archiveMember : Script ()
 archiveMember = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   Some live <- queryContractId f.founder f.member
   assert (live.share == 1)
   Fixtures.refuses f.provider "requires authorizers" do exerciseCmd f.member Archive
@@ -97,9 +100,10 @@ archiveMember = script do
   [] <- query @Member f.founder
   pure ()
 
+-- | Provider-only archive is refused; joint authority removes the comment.
 archiveComment : Script ()
 archiveComment = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   cid <- submit f.founder do
     exerciseCmd f.member Member_Comment with
       proposalId = "p"; cid = "c"; body = "Recorded"
@@ -113,9 +117,10 @@ archiveComment = script do
   [] <- query @Comment f.founder
   pure ()
 
+-- | Empty, oversized and provider-authored comments are refused without creating any comment.
 commentRefusals : Script ()
 commentRefusals = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   Fixtures.refuses f.founder "A comment of one to 5000 characters" do
     exerciseCmd f.member Member_Comment with
       proposalId = "signal"; cid = "c"; body = ""

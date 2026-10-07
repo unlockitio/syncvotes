@@ -34,8 +34,8 @@ onboard provider name = do
   pure (user, account)
 
 -- | A DAO whose founder holds its only share, under the rules given.
-foundWith : Bool -> Settings -> Settings -> Script Founded
-foundWith equal rules decisions = do
+foundDAOWithSettings : Bool -> Settings -> Settings -> Script Founded
+foundDAOWithSettings equal rules decisions = do
   provider <- allocateParty "provider"
   (founder, account) <- onboard provider "founder"
   dao <- submit founder do
@@ -47,8 +47,8 @@ foundWith equal rules decisions = do
   pure Founded with provider; founder; account; dao; member
 
 -- | The DAO most tests want: one member, one unit, one vote by simple majority.
-found : Script Founded
-found = foundWith True openSettings openSettings
+foundOneMemberDAO : Script Founded
+foundOneMemberDAO = foundDAOWithSettings True openSettings openSettings
 
 -- | A submission that must be refused, with the words the contract says when it refuses. A
 -- refusal for any other reason is as much a failure as acceptance: it would leave the rule
@@ -60,6 +60,7 @@ refuses party said cmds = trySubmit party cmds >>= because said
 refusesAll : [Party] -> Text -> Commands a -> Script ()
 refusesAll actors said cmds = trySubmit (actAs actors) cmds >>= because said
 
+-- | An expected rejection must include the named reason; success or a different error fails.
 because : Text -> Either SubmitError a -> Script ()
 because said outcome = case outcome of
   Right _ -> abort ("The ledger accepted what it must refuse: " <> said)

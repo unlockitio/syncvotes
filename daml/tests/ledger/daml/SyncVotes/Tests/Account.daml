@@ -7,9 +7,10 @@ import SyncVotes.Governance (DAO (..), Proposal (..))
 import qualified SyncVotes.Tests.Fixtures as Fixtures
 import SyncVotes.Types (Outcome (..), Effect (..))
 
+-- | The provider can archive an account, the founder cannot, and its DAO remains live.
 archiveAccount : Script ()
 archiveAccount = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   Some live <- queryContractId f.provider f.account
   assert (live.user == f.founder)
   trySubmit (actAs f.founder <> readAs f.provider) (do
@@ -20,9 +21,10 @@ archiveAccount = script do
   Some dao <- queryContractId f.founder f.dao
   assert (dao.creator == f.founder)
 
+-- | Replacing a profile consumes the previous one and leaves exactly the updated profile.
 profileReplacement : Script ()
 profileReplacement = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   first <- submit f.founder do
     exerciseCmd f.account Account_SetProfile with
       name = "Founder"; avatar = None; bio = "First"; previous = None
@@ -38,9 +40,10 @@ profileReplacement = script do
   [(_, only)] <- query @Profile f.founder
   assert (only.name == "Updated")
 
+-- | Invalid names or avatars, another party's profile, and provider-only changes are refused.
 profileRefusals : Script ()
 profileRefusals = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   (other, otherAccount) <- Fixtures.onboard f.provider "other"
   theirs <- submit other do
     exerciseCmd otherAccount Account_SetProfile with
@@ -66,18 +69,20 @@ profileRefusals = script do
   [] <- query @Profile f.founder
   pure ()
 
+-- | Founding creates a DAO with the requested rules and a single founder membership.
 founding : Script ()
 founding = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   Some dao <- queryContractId f.founder f.dao
   Some member <- queryContractId f.founder f.member
   assert (dao.name == "Test DAO" && dao.members == 1 && dao.units == 1)
   assert (dao.rules == Fixtures.openSettings && dao.decisions == Fixtures.openSettings)
   assert (member.party == f.founder && member.share == 1)
 
+-- | Extra founding shares become a proposal while initial DAO units belong to the founder.
 foundingWithMore : Script ()
 foundingWithMore = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   (joiner, _) <- Fixtures.onboard f.provider "joiner"
   next <- submit f.founder do
     exerciseCmd f.account Account_CreateDAO with
@@ -91,9 +96,10 @@ foundingWithMore = script do
   assert (any (\(_, p) -> p.id == "batch-founding" && p.outcome == Some Passed
                     && p.action == SetShares [(joiner, 3)]) proposals)
 
+-- | Bad names, settings or founding shares and unauthorized creation leave no extra DAO.
 foundingRefusals : Script ()
 foundingRefusals = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   let create name shares more rules = exerciseCmd f.account Account_CreateDAO with
         id = "rejected"; daoName = name; description = ""; image = None
         equal = True; rules; decisions = Fixtures.openSettings; shares; more

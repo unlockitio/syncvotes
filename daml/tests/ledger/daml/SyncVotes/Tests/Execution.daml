@@ -15,9 +15,10 @@ propose f dao member pid action = submit f.founder do
     dao; pid; title = "Change"; description = ""; action
     rule = None; votingDays = None; featuredAppRight = None
 
+-- | Joint authority archives ballots, proposal and DAO, but a membership survives the archive.
 archiveGovernance : Script ()
 archiveGovernance = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   proposal <- propose f f.dao f.member "archive" Signal
   Some p <- queryContractId f.provider proposal
   ballot <- submit f.founder do
@@ -85,7 +86,7 @@ membership reader party = do
 -- | Invalid batches roll back the proposal's progress as well as the DAO's state.
 shareBatches : Script ()
 shareBatches = script do
-  f <- Fixtures.foundWith False (Fixtures.openSettings with rule = Fixtures.openRule with basis = OfCast) Fixtures.openSettings
+  f <- Fixtures.foundDAOWithSettings False (Fixtures.openSettings with rule = Fixtures.openRule with basis = OfCast) Fixtures.openSettings
   (joiner, _) <- Fixtures.onboard f.provider "joiner"
   (outsider, outsiderAccount) <- Fixtures.onboard f.provider "outsider"
   otherDao <- submit outsider do
@@ -142,7 +143,7 @@ shareBatches = script do
 -- | Each effect that rewrites the DAO writes exactly its own fields, and leaves the rest standing.
 effectsRewriteTheDao : Script ()
 effectsRewriteTheDao = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   let strict = Settings with rule = (Fixtures.openRule with threshold = Percent 80); votingDays = 5
       loose = Settings with rule = (Fixtures.openRule with quorum = 25); votingDays = 2
       step dao member pid action = do
@@ -185,7 +186,7 @@ effectsRewriteTheDao = script do
 -- | A dissolution waits before it takes effect: the DAO stops taking proposals, then goes.
 dissolution : Script ()
 dissolution = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   pending <- propose f f.dao f.member "open" Signal
   dissolve <- propose f f.dao f.member "dissolve" Dissolve
   Fixtures.refuses f.provider "Not a dissolution that passed" do
@@ -236,7 +237,7 @@ dissolution = script do
 -- DAO's own proposals move it.
 executionAuthority : Script ()
 executionAuthority = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   (outsider, outsiderAccount) <- Fixtures.onboard f.provider "outsider"
   theirDao <- submit outsider do
     exerciseCmd outsiderAccount Account_CreateDAO with

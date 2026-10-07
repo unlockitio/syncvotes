@@ -49,14 +49,15 @@ markers provider = do
     Some marker -> pure marker
     None -> abort "Marker interface view missing"
 
+-- | Check the number and interface views of provider-beneficiary activity markers.
 checkMarkers : Party -> Party -> Int -> Script ()
 checkMarkers dso provider count = do
   found <- markers provider
   assert (length found == count)
   assert (all (\m -> m.dso == dso && m.provider == provider && m.beneficiary == provider && m.weight == 1.0) found)
 
--- Every creation is counted on the actual activity-marker interface; another provider's
--- right is rejected by SyncVotes before its interface choice is exercised.
+-- | DAO creation, proposal and vote emit markers, but replacement and partial execution do not;
+-- another provider's featured right is refused before its interface choice runs.
 creationAndProviderGuard : Script ()
 creationAndProviderGuard = script do
   dso <- allocateParty "dso"

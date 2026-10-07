@@ -34,7 +34,7 @@ voteV2 f member proposalId closesAt changeable vote previous previousV1 =
 -- | Both generations count, once each; the proposal counts units, not the number of ballots.
 bothBallotsCount : Script ()
 bothBallotsCount = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   (pid, p) <- propose f "p" Signal None
   first <- voteV1 f f.member "p" p.closesAt False Yes None
   [(member, _)] <- query @Member f.founder
@@ -61,7 +61,7 @@ bothBallotsCount = script do
 -- provider's premature `final` flag is accepted, but must not settle a non-early vote.
 batchesAndPrematureFinal : Script ()
 batchesAndPrematureFinal = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   (joiner, _) <- Fixtures.onboard f.provider "joiner"
   dao <- submit f.founder do
     exerciseCmd f.account Account_CreateDAO with
@@ -104,7 +104,7 @@ batchesAndPrematureFinal = script do
 -- count a ballot genuinely cast after its deadline, even if that ballot names a later deadline.
 expiredVotesArePruned : Script ()
 expiredVotesArePruned = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   (_, old) <- propose f "expired" Signal None
   first <- voteV2 f f.member "expired" old.closesAt False Yes None None
   [(beforeId, before)] <- query @Member f.founder
@@ -132,7 +132,7 @@ expiredVotesArePruned = script do
 -- | An unchangeable ballot cannot be replaced; replacing requires the actual current ballot.
 replacementAndWithdrawal : Script ()
 replacementAndWithdrawal = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   (_, p) <- propose f "fixed" Signal None
   fixed <- voteV1 f f.member "fixed" p.closesAt False Yes None
   [(member, _)] <- query @Member f.founder
@@ -177,7 +177,7 @@ replacementAndWithdrawal = script do
 -- | A vote can be cast without consulting a proposal; an invalid ballot is rejected when counted.
 countGuards : Script ()
 countGuards = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   (_, p) <- propose f "right" Signal None
   (otherId, other) <- propose f "other" Signal None
   wrong <- voteV2 f f.member "wrong" p.closesAt False Yes None None
@@ -198,7 +198,7 @@ countGuards = script do
 -- independent checks. Both ballot kinds use the same checks.
 countableBoundaries : Script ()
 countableBoundaries = script do
-  f <- Fixtures.found
+  f <- Fixtures.foundOneMemberDAO
   (_, p) <- propose f "p" Signal None
   original <- voteV2 f f.member "p" p.closesAt False Yes None None
   Some b <- queryContractId f.provider original
