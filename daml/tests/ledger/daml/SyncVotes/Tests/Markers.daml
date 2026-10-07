@@ -53,8 +53,13 @@ markers provider = do
 checkMarkers : Party -> Party -> Int -> Script ()
 checkMarkers dso provider count = do
   found <- markers provider
-  assert (length found == count)
-  assert (all (\m -> m.dso == dso && m.provider == provider && m.beneficiary == provider && m.weight == 1.0) found)
+  Fixtures.assertQueryCount "activity markers" count found
+  _ <- forA found \m -> do
+    Fixtures.assertEquals "marker DSO" dso m.dso
+    Fixtures.assertEquals "marker provider" provider m.provider
+    Fixtures.assertEquals "marker beneficiary" provider m.beneficiary
+    Fixtures.assertEquals "marker weight" 1.0 m.weight
+  pure ()
 
 -- | DAO creation, proposal and vote emit markers, but replacement and partial execution do not;
 -- another provider's featured right is refused before its interface choice runs.
@@ -73,7 +78,7 @@ creationAndProviderGuard = script do
       equal = True; rules = Fixtures.openSettings; decisions = Fixtures.openSettings
       shares = [(founder, 1)]; more = []; actorPays = False; public = True
       featuredAppRight = Some wrong
-  [] <- query @DAO provider
+  Fixtures.assertQueryCount "DAOs after rejected right" 0 =<< query @DAO provider
   checkMarkers dso provider 0
   dao <- submit founder do
     exerciseCmd account Account_CreateDAO with
@@ -81,43 +86,43 @@ creationAndProviderGuard = script do
       equal = True; rules = Fixtures.openSettings; decisions = Fixtures.openSettings
       shares = [(founder, 1)]; more = []; actorPays = False; public = True
       featuredAppRight = Some right
-  Some _ <- queryContractId provider dao
+  _ <- Fixtures.assertLiveContract "DAO" provider dao
   checkMarkers dso provider 1
-  [(member, _)] <- query @Member founder
+  (member, _) <- Fixtures.assertSingleResult "founder membership" =<< query @Member founder
   proposal <- submit founder do
     exerciseCmd member Member_Propose with
       dao; pid = "vote"; title = "Vote"; description = ""; action = Signal
       rule = Some (Fixtures.openRule with changeable = True); votingDays = None
       featuredAppRight = Some right
   checkMarkers dso provider 2
-  Some p <- queryContractId provider proposal
+  p <- Fixtures.assertLiveContract "proposal" provider proposal
   first <- submit founder do
     exerciseCmd member Member_Cast with
       proposalId = "vote"; closesAt = p.closesAt; changeable = True; vote = Yes
       previous = None; previousV1 = None; featuredAppRight = Some right
   checkMarkers dso provider 3
-  [(nextMember, _)] <- query @Member founder
+  (nextMember, _) <- Fixtures.assertSingleResult "next founder membership" =<< query @Member founder
   second <- submit founder do
     exerciseCmd nextMember Member_Cast with
       proposalId = "vote"; closesAt = p.closesAt; changeable = True; vote = No
       previous = Some first; previousV1 = None; featuredAppRight = Some right
-  None <- queryContractId provider first
-  Some _ <- queryContractId provider second
+  Fixtures.assertArchivedContract "replaced ballot" provider first
+  _ <- Fixtures.assertLiveContract "replacement ballot" provider second
   checkMarkers dso provider 3
   setTime (addRelTime p.closesAt (days 1))
   passed <- submit provider do
     exerciseCmd proposal Proposal_Tally with ballots = []; final = True; cast = Some [second]
-  Some settled <- queryContractId provider passed
+  settled <- Fixtures.assertLiveContract "settled proposal" provider passed
   assert (settled.outcome == Some Failed)
   -- A separate, passed share change requires two batches. Only completion marks.
-  [(current, _)] <- query @Member founder
+  (current, _) <- Fixtures.assertSingleResult "current founder membership" =<< query @Member founder
   (joiner, _) <- Fixtures.onboard provider "joiner"
   change <- submit founder do
     exerciseCmd current Member_Propose with
       dao; pid = "shares"; title = "Shares"; description = ""
       action = SetShares [(founder, 1), (joiner, 1)]
       rule = None; votingDays = None; featuredAppRight = None
-  Some shareProposal <- queryContractId provider change
+  shareProposal <- Fixtures.assertLiveContract "share proposal" provider change
   ballot <- submit founder do
     exerciseCmd current Member_Cast with
       proposalId = "shares"; closesAt = shareProposal.closesAt; changeable = False
@@ -125,17 +130,17 @@ creationAndProviderGuard = script do
   setTime (addRelTime shareProposal.closesAt (days 1))
   accepted <- submit provider do
     exerciseCmd change Proposal_Tally with ballots = []; final = True; cast = Some [ballot]
-  Some result <- queryContractId provider accepted
+  result <- Fixtures.assertLiveContract "accepted proposal" provider accepted
   assert (result.outcome == Some Passed)
-  [(liveMember, _)] <- query @Member founder
+  (liveMember, _) <- Fixtures.assertSingleResult "live founder membership" =<< query @Member founder
   firstBatch <- submit provider do
     exerciseCmd dao DAO_Execute with
       proposal = accepted; current = [liveMember]; upTo = 1; featuredAppRight = Some right
-  Some daoNext <- pure firstBatch
+  daoNext <- Fixtures.assertPresent "DAO after first marker batch" firstBatch
   checkMarkers dso provider 3
-  [(progress, _)] <- pure . filter (\(_, x) -> x.id == "shares") =<< query @Proposal provider
+  (progress, _) <- Fixtures.assertSingleMatching "share proposal in progress" (\(_, x) -> x.id == "shares") =<< query @Proposal provider
   lastBatch <- submit provider do
     exerciseCmd daoNext DAO_Execute with
       proposal = progress; current = []; upTo = 2; featuredAppRight = Some right
-  Some _ <- pure lastBatch
+  _ <- Fixtures.assertPresent "DAO after final marker batch" lastBatch
   checkMarkers dso provider 4

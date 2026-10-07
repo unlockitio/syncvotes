@@ -19,13 +19,16 @@ decisionTakesItsOwnRule = script do
   let decisions = Settings with rule = (Fixtures.openRule with quorum = 10); votingDays = 7
   f <- Fixtures.foundDAOWithSettings True Fixtures.openSettings decisions
   byDefault <- submit f.founder do propose f "default" Signal None None
-  Some asIs <- queryContractId f.founder byDefault
-  assert (asIs.rule == decisions.rule && asIs.eligible == 1)
+  asIs <- Fixtures.assertLiveContract "default proposal" f.founder byDefault
+  Fixtures.assertEquals "default proposal rule" decisions.rule asIs.rule
+  Fixtures.assertEquals "default proposal electorate" 1 asIs.eligible
   assert (asIs.closesAt == addRelTime asIs.createdAt (days 7))
-  assert (asIs.outcome == None && asIs.executed == 0 && asIs.tallies == [])
+  Fixtures.assertEquals "default proposal outcome" None asIs.outcome
+  Fixtures.assertEquals "default proposal progress" 0 asIs.executed
+  Fixtures.assertEquals "default proposal tallies" [] asIs.tallies
   let mine = Fixtures.openRule with threshold = Percent 75; quorum = 50
   ofItsOwn <- submit f.founder do propose f "own" Signal (Some mine) (Some 3)
-  Some set <- queryContractId f.founder ofItsOwn
+  set <- Fixtures.assertLiveContract "overridden proposal" f.founder ofItsOwn
   assert (set.rule == mine)
   assert (set.closesAt == addRelTime set.createdAt (days 3))
 
@@ -36,8 +39,9 @@ choiceCarriesTallies = script do
   let options = ["First", "Second", "Third"]
   proposal <- submit f.founder do
     propose f "choice" (Choose with options; several = False) None None
-  Some put <- queryContractId f.founder proposal
-  assert (put.tallies == [0, 0, 0] && put.picked == 0)
+  put <- Fixtures.assertLiveContract "proposal" f.founder proposal
+  Fixtures.assertEquals "choice initial tallies" [0, 0, 0] put.tallies
+  Fixtures.assertEquals "choice initial picks" 0 put.picked
   assert (put.action == Choose with options; several = False)
 
 -- | DAO changes use its voting rule and deadline; proposer overrides are refused.
@@ -47,7 +51,7 @@ daoChangesTakeTheDaoRules = script do
   f <- Fixtures.foundDAOWithSettings True rules Fixtures.openSettings
   proposal <- submit f.founder do
     propose f "rename" (SetInfo with daoName = "Renamed"; description = "New"; image = None) None None
-  Some change <- queryContractId f.founder proposal
+  change <- Fixtures.assertLiveContract "DAO change proposal" f.founder proposal
   assert (change.rule == rules.rule)
   assert (change.closesAt == addRelTime change.createdAt (days 14))
   Fixtures.refuses f.founder "A proposal that changes the DAO runs under the DAO's voting rules" do
@@ -140,5 +144,5 @@ sharesByUnitsAreAllowed = script do
   (other, _) <- Fixtures.onboard f.provider "other"
   proposal <- submit f.founder do
     propose f "shares" (SetShares with changes = [(other, 7)]) None None
-  Some put <- queryContractId f.founder proposal
+  put <- Fixtures.assertLiveContract "proposal" f.founder proposal
   assert (put.action == SetShares with changes = [(other, 7)])

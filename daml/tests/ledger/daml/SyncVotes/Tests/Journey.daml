@@ -20,19 +20,23 @@ journey = script do
   profile <- submit founder do
     exerciseCmd account Account_SetProfile with
       name = "Founder"; avatar = None; bio = "Let's govern together"; previous = None
-  Some identity <- queryContractId founder profile
-  assert (identity.user == founder && identity.name == "Founder")
+  identity <- Fixtures.assertLiveContract "founder profile" founder profile
+  Fixtures.assertEquals "profile user" founder identity.user
+  Fixtures.assertEquals "profile name" "Founder" identity.name
   dao <- submit founder do
     exerciseCmd account Account_CreateDAO with
       id = "journey"; daoName = "Common Ground"; description = "Our shared DAO"
       image = None; equal = False; rules = Fixtures.openSettings
       decisions = Fixtures.openSettings; shares = [(founder, 3), (joiner, 2)]
       more = []; actorPays = False; public = True; featuredAppRight = None
-  Some founded <- queryContractId provider dao
-  assert (founded.creator == founder && founded.members == 2 && founded.units == 5)
-  [(founderMember, founderRecord)] <- pure . filter (\(_, m) -> m.party == founder) =<< query @Member founder
-  [(joinerMember, joinerRecord)] <- query @Member joiner
-  assert (founderRecord.share == 3 && joinerRecord.share == 2)
+  founded <- Fixtures.assertLiveContract "founded DAO" provider dao
+  Fixtures.assertEquals "DAO creator" founder founded.creator
+  Fixtures.assertEquals "DAO members" 2 founded.members
+  Fixtures.assertEquals "DAO units" 5 founded.units
+  (founderMember, founderRecord) <- Fixtures.assertSingleMatching "founder membership" (\(_, m) -> m.party == founder) =<< query @Member founder
+  (joinerMember, joinerRecord) <- Fixtures.assertSingleResult "joiner membership" =<< query @Member joiner
+  Fixtures.assertEquals "founder share" 3 founderRecord.share
+  Fixtures.assertEquals "joiner share" 2 joinerRecord.share
 
   -- A founder proposes admitting a third member and changing the existing shares.
   shares <- submit founder do
@@ -40,13 +44,16 @@ journey = script do
       dao; pid = "shares"; title = "Welcome a newcomer"; description = "Reshare the vote"
       action = SetShares [(founder, 2), (joiner, 2), (newcomer, 3)]
       rule = None; votingDays = None; featuredAppRight = None
-  Some proposed <- queryContractId provider shares
-  assert (proposed.eligible == 5 && proposed.outcome == None)
+  proposed <- Fixtures.assertLiveContract "share proposal" provider shares
+  Fixtures.assertEquals "share proposal electorate" 5 proposed.eligible
+  Fixtures.assertEquals "share proposal outcome" None proposed.outcome
   comment <- submit joiner do
     exerciseCmd joinerMember Member_Comment with
       proposalId = proposed.id; cid = "welcome"; body = "Welcome aboard"
-  Some said <- queryContractId joiner comment
-  assert (said.author == joiner && said.proposalId == proposed.id && said.daoId == founded.id)
+  said <- Fixtures.assertLiveContract "joiner comment" joiner comment
+  Fixtures.assertEquals "comment author" joiner said.author
+  Fixtures.assertEquals "comment proposal" proposed.id said.proposalId
+  Fixtures.assertEquals "comment DAO" founded.id said.daoId
 
   -- Both generations of ballot count on the same proposal, from different members.
   oldBallot <- submit founder do
@@ -57,43 +64,55 @@ journey = script do
     exerciseCmd joinerMember Member_Cast with
       proposalId = proposed.id; closesAt = proposed.closesAt; changeable = False
       vote = Yes; previous = None; previousV1 = None; featuredAppRight = None
-  Some oldVote <- queryContractId provider oldBallot
-  Some newVote <- queryContractId provider newBallot
-  assert (oldVote.weight == 3 && newVote.weight == 2 && not oldVote.counted && not newVote.counted)
+  oldVote <- Fixtures.assertLiveContract "legacy ballot" provider oldBallot
+  newVote <- Fixtures.assertLiveContract "modern ballot" provider newBallot
+  Fixtures.assertEquals "legacy ballot weight" 3 oldVote.weight
+  Fixtures.assertEquals "modern ballot weight" 2 newVote.weight
+  Fixtures.assertCondition "legacy ballot uncounted" (not oldVote.counted)
+  Fixtures.assertCondition "modern ballot uncounted" (not newVote.counted)
   setTime (addRelTime proposed.closesAt (days 1))
   passed <- submit provider do
     exerciseCmd shares Proposal_Tally with ballots = [oldBallot]; final = True; cast = Some [newBallot]
-  Some result <- queryContractId provider passed
-  assert (result.yes == 5 && result.eligible == 5 && result.outcome == Some Passed)
-  [(countedV1, _)] <- query @Ballot provider
-  [(countedV2, _)] <- query @BallotV2 provider
-  Some v1 <- queryContractId provider countedV1
-  Some v2 <- queryContractId provider countedV2
-  assert (v1.counted && v2.counted)
+  result <- Fixtures.assertLiveContract "passed share proposal" provider passed
+  Fixtures.assertEquals "share tally yes" 5 result.yes
+  Fixtures.assertEquals "share tally electorate" 5 result.eligible
+  Fixtures.assertEquals "share tally outcome" (Some Passed) result.outcome
+  (countedV1, _) <- Fixtures.assertSingleResult "legacy counted ballot" =<< query @Ballot provider
+  (countedV2, _) <- Fixtures.assertSingleResult "modern counted ballot" =<< query @BallotV2 provider
+  v1 <- Fixtures.assertLiveContract "counted legacy ballot" provider countedV1
+  v2 <- Fixtures.assertLiveContract "counted modern ballot" provider countedV2
+  Fixtures.assertCondition "legacy ballot counted" v1.counted
+  Fixtures.assertCondition "modern ballot counted" v2.counted
 
   -- Execution replaces the DAO and memberships; the next batch consumes the advanced proposal.
-  [(currentFounder, _)] <- pure . filter (\(_, m) -> m.party == founder) =<< query @Member founder
-  [(currentJoiner, _)] <- query @Member joiner
+  (currentFounder, _) <- Fixtures.assertSingleMatching "current founder membership" (\(_, m) -> m.party == founder) =<< query @Member founder
+  (currentJoiner, _) <- Fixtures.assertSingleResult "current joiner membership" =<< query @Member joiner
   first <- submit provider do
     exerciseCmd dao DAO_Execute with
       proposal = passed; current = [currentFounder, currentJoiner]; upTo = 2
       featuredAppRight = None
-  Some partialDao <- pure first
-  Some partial <- queryContractId provider partialDao
-  assert (partial.members == 2 && partial.units == 4)
-  None <- queryContractId provider dao
-  [(progressId, progress)] <- pure . filter (\(_, p) -> p.id == "shares") =<< query @Proposal provider
-  assert (progress.executed == 2 && progress.executedAt == None)
+  partialDao <- Fixtures.assertPresent "DAO after first share batch" first
+  partial <- Fixtures.assertLiveContract "partial DAO" provider partialDao
+  Fixtures.assertEquals "partial DAO members" 2 partial.members
+  Fixtures.assertEquals "partial DAO units" 4 partial.units
+  Fixtures.assertArchivedContract "original DAO" provider dao
+  (progressId, progress) <- Fixtures.assertSingleMatching "share proposal in progress" (\(_, p) -> p.id == "shares") =<< query @Proposal provider
+  Fixtures.assertEquals "share batch progress" 2 progress.executed
+  Fixtures.assertEquals "share batch execution time" None progress.executedAt
   last <- submit provider do
     exerciseCmd partialDao DAO_Execute with
       proposal = progressId; current = []; upTo = 3; featuredAppRight = None
-  Some expandedDao <- pure last
-  Some expanded <- queryContractId provider expandedDao
-  assert (expanded.members == 3 && expanded.units == 7)
-  [(newMember, newRecord)] <- query @Member newcomer
-  assert (newRecord.share == 3 && newRecord.daoId == expanded.id)
-  [(finishedShares, finished)] <- pure . filter (\(_, p) -> p.id == "shares") =<< query @Proposal provider
-  assert (finishedShares /= progressId && finished.executed == 3 && finished.executedAt /= None)
+  expandedDao <- Fixtures.assertPresent "DAO after final share batch" last
+  expanded <- Fixtures.assertLiveContract "expanded DAO" provider expandedDao
+  Fixtures.assertEquals "expanded DAO members" 3 expanded.members
+  Fixtures.assertEquals "expanded DAO units" 7 expanded.units
+  (newMember, newRecord) <- Fixtures.assertSingleResult "newcomer membership" =<< query @Member newcomer
+  Fixtures.assertEquals "newcomer share" 3 newRecord.share
+  Fixtures.assertEquals "newcomer DAO" expanded.id newRecord.daoId
+  (finishedShares, finished) <- Fixtures.assertSingleMatching "finished share proposal" (\(_, p) -> p.id == "shares") =<< query @Proposal provider
+  Fixtures.assertCondition "share proposal replaced" (finishedShares /= progressId)
+  Fixtures.assertEquals "finished share batches" 3 finished.executed
+  Fixtures.assertCondition "finished share execution time recorded" (finished.executedAt /= None)
 
   -- The provider records statements about this DAO and founder; these are bookkeeping records,
   -- not transfers, and the ledger does not calculate charges from governance transactions.
@@ -110,24 +129,27 @@ journey = script do
   nextPurse <- submit provider do
     exerciseCmd purse Purse_Update with
       newParty = Some founder; newCredited = 5.0; newCharged = 0.5
-  None <- queryContractId provider meter
-  None <- queryContractId provider purse
-  Some daoStatement <- queryContractId provider nextMeter
-  Some personalStatement <- queryContractId provider nextPurse
-  assert (daoStatement.daoId == expanded.id && daoStatement.credited - daoStatement.charged == 9.0)
-  assert (personalStatement.party == Some founder && personalStatement.credited - personalStatement.charged == 4.5)
+  Fixtures.assertArchivedContract "original meter" provider meter
+  Fixtures.assertArchivedContract "original purse" provider purse
+  daoStatement <- Fixtures.assertLiveContract "DAO meter" provider nextMeter
+  personalStatement <- Fixtures.assertLiveContract "founder purse" provider nextPurse
+  Fixtures.assertEquals "meter DAO" expanded.id daoStatement.daoId
+  Fixtures.assertEquals "meter balance" 9.0 (daoStatement.credited - daoStatement.charged)
+  Fixtures.assertEquals "purse party" (Some founder) personalStatement.party
+  Fixtures.assertEquals "purse balance" 4.5 (personalStatement.credited - personalStatement.charged)
 
   -- Dissolution needs a new proposal after the share change: ballots cast before resharing
   -- cannot count for a proposal opened against the new electorate.
-  [(resharedFounder, _)] <- pure . filter (\(_, m) -> m.party == founder) =<< query @Member founder
-  [(resharedJoiner, _)] <- query @Member joiner
+  (resharedFounder, _) <- Fixtures.assertSingleMatching "reshared founder membership" (\(_, m) -> m.party == founder) =<< query @Member founder
+  (resharedJoiner, _) <- Fixtures.assertSingleResult "reshared joiner membership" =<< query @Member joiner
   dissolution <- submit founder do
     exerciseCmd resharedFounder Member_Propose with
       dao = expandedDao; pid = "retire"; title = "Close Common Ground"
       description = "The work is done"; action = Dissolve
       rule = None; votingDays = None; featuredAppRight = None
-  Some closing <- queryContractId provider dissolution
-  assert (closing.eligible == 7 && closing.outcome == None)
+  closing <- Fixtures.assertLiveContract "dissolution proposal" provider dissolution
+  Fixtures.assertEquals "dissolution electorate" 7 closing.eligible
+  Fixtures.assertEquals "open dissolution outcome" None closing.outcome
   founderVote <- submit founder do
     exerciseCmd resharedFounder Member_Cast with
       proposalId = closing.id; closesAt = closing.closesAt; changeable = False
@@ -144,22 +166,27 @@ journey = script do
   settled <- submit provider do
     exerciseCmd dissolution Proposal_Tally with
       ballots = []; final = True; cast = Some [founderVote, joinerVote, newcomerVote]
-  Some verdict <- queryContractId provider settled
-  assert (verdict.yes == 7 && verdict.outcome == Some Passed)
+  verdict <- Fixtures.assertLiveContract "settled dissolution" provider settled
+  Fixtures.assertEquals "dissolution yes votes" 7 verdict.yes
+  Fixtures.assertEquals "dissolution outcome" (Some Passed) verdict.outcome
   -- A passed dissolution first closes proposals, then execution archives the DAO.
   dissolving <- submit provider do
     exerciseCmd expandedDao DAO_BeginDissolving with proposal = settled
-  Some waiting <- queryContractId provider dissolving
-  assert (waiting.dissolving /= None && waiting.members == 3)
+  waiting <- Fixtures.assertLiveContract "dissolving DAO" provider dissolving
+  Fixtures.assertCondition "DAO dissolution started" (waiting.dissolving /= None)
+  Fixtures.assertEquals "dissolving DAO members" 3 waiting.members
   gone <- submit provider do
     exerciseCmd dissolving DAO_Execute with
       proposal = settled; current = []; upTo = 1; featuredAppRight = None
-  assert (gone == None)
-  None <- queryContractId provider dissolving
-  [] <- query @DAO provider
-  [(retiredId, retired)] <- pure . filter (\(_, p) -> p.id == "retire") =<< query @Proposal provider
-  assert (retiredId /= settled && retired.executed == 1 && retired.executedAt /= None)
+  Fixtures.assertAbsent "DAO after dissolution" gone
+  Fixtures.assertArchivedContract "dissolved DAO" provider dissolving
+  Fixtures.assertQueryCount "DAOs after retirement" 0 =<< query @DAO provider
+  (retiredId, retired) <- Fixtures.assertSingleMatching "retired proposal" (\(_, p) -> p.id == "retire") =<< query @Proposal provider
+  Fixtures.assertCondition "retirement proposal replaced" (retiredId /= settled)
+  Fixtures.assertEquals "retirement execution progress" 1 retired.executed
+  Fixtures.assertCondition "retirement execution time recorded" (retired.executedAt /= None)
   -- Dissolution retires the DAO, but does not sweep the members or provider statements.
-  [(orphan, survivingMember)] <- query @Member newcomer
-  Some _ <- queryContractId provider nextMeter
-  assert (orphan /= newMember && survivingMember.daoId == "journey")
+  (orphan, survivingMember) <- Fixtures.assertSingleResult "surviving newcomer membership" =<< query @Member newcomer
+  _ <- Fixtures.assertLiveContract "surviving meter" provider nextMeter
+  Fixtures.assertCondition "newcomer membership replaced" (orphan /= newMember)
+  Fixtures.assertEquals "surviving membership DAO" "journey" survivingMember.daoId

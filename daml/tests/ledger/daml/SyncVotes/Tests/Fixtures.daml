@@ -43,12 +43,57 @@ foundDAOWithSettings equal rules decisions = do
       id = "dao"; daoName = "Test DAO"; description = ""; image = None
       equal; rules; decisions; shares = [(founder, 1)]; more = []
       actorPays = False; public = True; featuredAppRight = None
-  [(member, _)] <- query @Member founder
+  (member, _) <- assertSingleResult "founder's founding membership" =<< query @Member founder
   pure Founded with provider; founder; account; dao; member
 
 -- | The DAO most tests want: one member, one unit, one vote by simple majority.
 foundOneMemberDAO : Script Founded
 foundOneMemberDAO = foundDAOWithSettings True openSettings openSettings
+
+-- | Require a visible live contract. The label identifies the expectation if it is absent.
+assertLiveContract : (Template t, HasEnsure t) => Text -> Party -> ContractId t -> Script t
+assertLiveContract label reader cid = do
+  result <- queryContractId reader cid
+  case result of
+    Some contract -> pure contract
+    None -> abort ("Expected live " <> label <> " contract")
+
+-- | Require that the contract has been consumed or archived.
+assertArchivedContract : (Template t, HasEnsure t) => Text -> Party -> ContractId t -> Script ()
+assertArchivedContract label reader cid = do
+  result <- queryContractId reader cid
+  case result of
+    None -> pure ()
+    Some _ -> abort ("Expected archived " <> label <> " contract")
+
+assertPresent : Text -> Optional a -> Script a
+assertPresent label result = case result of
+  Some value -> pure value
+  None -> abort ("Expected " <> label)
+
+assertAbsent : Text -> Optional a -> Script ()
+assertAbsent label result = case result of
+  None -> pure ()
+  Some _ -> abort ("Expected no " <> label)
+
+assertSingleResult : Text -> [a] -> Script a
+assertSingleResult label results = case results of
+  [one] -> pure one
+  _ -> abort ("Expected exactly one " <> label <> "; found " <> show (length results))
+
+assertSingleMatching : Text -> (a -> Bool) -> [a] -> Script a
+assertSingleMatching label predicate results = assertSingleResult label (filter predicate results)
+
+assertQueryCount : Text -> Int -> [a] -> Script ()
+assertQueryCount label expected results =
+  assertMsg ("Expected " <> show expected <> " " <> label <> "; found " <> show (length results))
+    (length results == expected)
+
+assertEquals : Eq a => Text -> a -> a -> Script ()
+assertEquals label expected actual = assertMsg ("Expected " <> label <> " to equal expected value") (actual == expected)
+
+assertCondition : Text -> Bool -> Script ()
+assertCondition label condition = assertMsg ("Expected " <> label) condition
 
 -- | A submission that must be refused, with the words the contract says when it refuses. A
 -- refusal for any other reason is as much a failure as acceptance: it would leave the rule

@@ -11,12 +11,12 @@ import SyncVotes.Types (Effect (..), Vote (..), Outcome (..), Rule (..))
 
 propose : Fixtures.Founded -> Text -> Effect -> Optional Rule -> Script (ContractId Proposal, Proposal)
 propose f pid action rule = do
-  [(member, _)] <- query @Member f.founder
+  (member, _) <- Fixtures.assertSingleResult "founder membership" =<< query @Member f.founder
   cid <- submit f.founder do
     exerciseCmd member Member_Propose with
       dao = f.dao; pid; title = "Vote"; description = ""; action; rule
       votingDays = None; featuredAppRight = None
-  Some p <- queryContractId f.provider cid
+  p <- Fixtures.assertLiveContract "proposal" f.provider cid
   pure (cid, p)
 
 voteV1 : Fixtures.Founded -> ContractId Member -> Text -> Time -> Bool -> Vote -> Optional (ContractId Ballot) -> Script (ContractId Ballot)
@@ -37,22 +37,25 @@ bothBallotsCount = script do
   f <- Fixtures.foundOneMemberDAO
   (pid, p) <- propose f "p" Signal None
   first <- voteV1 f f.member "p" p.closesAt False Yes None
-  [(member, _)] <- query @Member f.founder
+  (member, _) <- Fixtures.assertSingleResult "founder membership" =<< query @Member f.founder
   (otherPid, other) <- propose f "other" Signal None
   second <- voteV2 f member "other" other.closesAt False No None None
   counted <- submit f.provider do
     exerciseCmd pid Proposal_Tally with
       ballots = [first]; final = False; cast = None
-  Some interim <- queryContractId f.provider counted
-  assert (interim.yes == 1 && interim.outcome == None)
+  interim <- Fixtures.assertLiveContract "interim proposal" f.provider counted
+  Fixtures.assertEquals "legacy interim yes" 1 interim.yes
+  Fixtures.assertEquals "legacy interim outcome" None interim.outcome
   countedOther <- submit f.provider do
     exerciseCmd otherPid Proposal_Tally with
       ballots = []; final = False; cast = Some [second]
-  Some otherInterim <- queryContractId f.provider countedOther
-  assert (otherInterim.no == 1 && otherInterim.outcome == None)
-  [(oldId, old)] <- query @Ballot f.provider
-  [(modernId, modern)] <- query @BallotV2 f.provider
-  assert (old.counted && modern.counted)
+  otherInterim <- Fixtures.assertLiveContract "other interim proposal" f.provider countedOther
+  Fixtures.assertEquals "modern interim no" 1 otherInterim.no
+  Fixtures.assertEquals "modern interim outcome" None otherInterim.outcome
+  (oldId, old) <- Fixtures.assertSingleResult "legacy ballot" =<< query @Ballot f.provider
+  (modernId, modern) <- Fixtures.assertSingleResult "modern ballot" =<< query @BallotV2 f.provider
+  Fixtures.assertCondition "legacy ballot counted" old.counted
+  Fixtures.assertCondition "modern ballot counted" modern.counted
   -- A second count of either marked ballot reaches its own guard, not a settled-proposal guard.
   Fixtures.refuses f.provider "Already counted" do exerciseCmd oldId Ballot_Count with proposal = interim
   Fixtures.refuses f.provider "Already counted" do exerciseCmd modernId BallotV2_Count with proposal = otherInterim
@@ -69,36 +72,42 @@ batchesAndPrematureFinal = script do
       equal = True; rules = Fixtures.openSettings; decisions = Fixtures.openSettings
       shares = [(f.founder, 1), (joiner, 1)]; more = []
       actorPays = False; public = True; featuredAppRight = None
-  [(founderMember, _)] <- pure . filter
+  (founderMember, _) <- Fixtures.assertSingleMatching "batch DAO founder membership"
     (\(_, m) -> m.daoId == "batch-dao" && m.party == f.founder) =<< query @Member f.founder
-  [(secondMember, _)] <- pure . filter
+  (secondMember, _) <- Fixtures.assertSingleMatching "batch DAO joiner membership"
     (\(_, m) -> m.daoId == "batch-dao") =<< query @Member joiner
   pid <- submit f.founder do
     exerciseCmd founderMember Member_Propose with
       dao; pid = "batches"; title = "Vote"; description = ""
       action = Signal; rule = None; votingDays = None; featuredAppRight = None
-  Some p <- queryContractId f.provider pid
+  p <- Fixtures.assertLiveContract "batch proposal" f.provider pid
   first <- submit f.founder do
     exerciseCmd founderMember Member_Cast with
       proposalId = "batches"; closesAt = p.closesAt; changeable = False; vote = Yes
       previous = None; previousV1 = None; featuredAppRight = None
   early <- submit f.provider do
     exerciseCmd pid Proposal_Tally with ballots = []; final = True; cast = Some [first]
-  Some pending <- queryContractId f.provider early
-  assert (pending.yes == 1 && pending.no == 0 && pending.outcome == None)
+  pending <- Fixtures.assertLiveContract "pending proposal" f.provider early
+  Fixtures.assertEquals "pending yes" 1 pending.yes
+  Fixtures.assertEquals "pending no" 0 pending.no
+  Fixtures.assertEquals "pending outcome" None pending.outcome
   second <- submit joiner do
     exerciseCmd secondMember Member_Cast with
       proposalId = "batches"; closesAt = p.closesAt; changeable = False; vote = No
       previous = None; previousV1 = None; featuredAppRight = None
   again <- submit f.provider do
     exerciseCmd early Proposal_Tally with ballots = []; final = False; cast = Some [second]
-  Some carried <- queryContractId f.provider again
-  assert (carried.yes == 1 && carried.no == 1 && carried.outcome == None)
+  carried <- Fixtures.assertLiveContract "carried proposal" f.provider again
+  Fixtures.assertEquals "carried yes" 1 carried.yes
+  Fixtures.assertEquals "carried no" 1 carried.no
+  Fixtures.assertEquals "carried outcome" None carried.outcome
   setTime (addRelTime p.closesAt (days 1))
   settled <- submit f.provider do
     exerciseCmd again Proposal_Tally with ballots = []; final = True; cast = None
-  Some result <- queryContractId f.provider settled
-  assert (result.yes == 1 && result.no == 1 && result.outcome == Some Failed)
+  result <- Fixtures.assertLiveContract "settled proposal" f.provider settled
+  Fixtures.assertEquals "settled yes" 1 result.yes
+  Fixtures.assertEquals "settled no" 1 result.no
+  Fixtures.assertEquals "settled outcome" (Some Failed) result.outcome
 
 -- | A member forgets closed proposals on the next vote, while the old proposal cannot
 -- count a ballot genuinely cast after its deadline, even if that ballot names a later deadline.
@@ -107,27 +116,30 @@ expiredVotesArePruned = script do
   f <- Fixtures.foundOneMemberDAO
   (_, old) <- propose f "expired" Signal None
   first <- voteV2 f f.member "expired" old.closesAt False Yes None None
-  [(beforeId, before)] <- query @Member f.founder
+  (beforeId, before) <- Fixtures.assertSingleResult "membership before pruning" =<< query @Member f.founder
   assert (before.voted == [("expired", old.closesAt)])
   setTime (addRelTime old.closesAt (days 1))
   (freshId, fresh) <- propose f "fresh" Signal None
   next <- voteV2 f beforeId "fresh" fresh.closesAt False No None None
-  [(afterId, after)] <- query @Member f.founder
-  assert (afterId /= beforeId && after.voted == [("fresh", fresh.closesAt)])
+  (afterId, after) <- Fixtures.assertSingleResult "membership after pruning" =<< query @Member f.founder
+  Fixtures.assertCondition "membership replaced after pruning" (afterId /= beforeId)
+  Fixtures.assertEquals "pruned votes" [("fresh", fresh.closesAt)] after.voted
   late <- voteV2 f afterId "expired" fresh.closesAt False Yes None None
-  [(latestId, latest)] <- query @Member f.founder
+  (latestId, latest) <- Fixtures.assertSingleResult "latest membership" =<< query @Member f.founder
   assert (latestId /= afterId)
   assert (latest.voted == [("expired", fresh.closesAt), ("fresh", fresh.closesAt)])
   Fixtures.refuses f.provider "Cast after the deadline" do exerciseCmd late BallotV2_Count with proposal = old
   settled <- submit f.provider do
     exerciseCmd freshId Proposal_Tally with ballots = []; final = False; cast = Some [next]
-  Some counted <- queryContractId f.provider settled
-  assert (counted.no == 1 && counted.outcome == None)
-  [(oldId, _)] <- pure . filter (\(_, p) -> p.id == "expired") =<< query @Proposal f.provider
+  counted <- Fixtures.assertLiveContract "counted proposal" f.provider settled
+  Fixtures.assertEquals "counted no" 1 counted.no
+  Fixtures.assertEquals "counted outcome" None counted.outcome
+  (oldId, _) <- Fixtures.assertSingleMatching "expired proposal" (\(_, p) -> p.id == "expired") =<< query @Proposal f.provider
   finished <- submit f.provider do
     exerciseCmd oldId Proposal_Tally with ballots = []; final = True; cast = Some [first]
-  Some result <- queryContractId f.provider finished
-  assert (result.yes == 1 && result.outcome == Some Passed)
+  result <- Fixtures.assertLiveContract "finished proposal" f.provider finished
+  Fixtures.assertEquals "result yes" 1 result.yes
+  Fixtures.assertEquals "result outcome" (Some Passed) result.outcome
 
 -- | An unchangeable ballot cannot be replaced; replacing requires the actual current ballot.
 replacementAndWithdrawal : Script ()
@@ -135,7 +147,7 @@ replacementAndWithdrawal = script do
   f <- Fixtures.foundOneMemberDAO
   (_, p) <- propose f "fixed" Signal None
   fixed <- voteV1 f f.member "fixed" p.closesAt False Yes None
-  [(member, _)] <- query @Member f.founder
+  (member, _) <- Fixtures.assertSingleResult "founder membership" =<< query @Member f.founder
   Fixtures.refuses f.founder "Already voted; votes on this proposal cannot be changed" do
     exerciseCmd member Member_Vote with
       proposalId = "fixed"; closesAt = p.closesAt; changeable = False; vote = No
@@ -143,34 +155,36 @@ replacementAndWithdrawal = script do
   Fixtures.refuses f.founder "Votes on this proposal cannot be changed" do exerciseCmd fixed Ballot_Withdraw
   (changingId, changing) <- propose f "changing" Signal (Some (Fixtures.openRule with changeable = True))
   first <- voteV1 f member "changing" changing.closesAt True Yes None
-  [(member2, _)] <- query @Member f.founder
+  (member2, _) <- Fixtures.assertSingleResult "second membership" =<< query @Member f.founder
   Fixtures.refuses f.founder "Already voted; hand in the ballot to replace" do
     exerciseCmd member2 Member_Vote with
       proposalId = "changing"; closesAt = changing.closesAt; changeable = True
       vote = No; previous = None; featuredAppRight = None
   second <- voteV1 f member2 "changing" changing.closesAt True No (Some first)
-  None <- queryContractId f.provider first
-  [(member3, _)] <- query @Member f.founder
+  Fixtures.assertArchivedContract "first ballot" f.provider first
+  (member3, _) <- Fixtures.assertSingleResult "third membership" =<< query @Member f.founder
   modern <- voteV2 f member3 "changing" changing.closesAt True Abstain None (Some second)
-  None <- queryContractId f.provider second
-  [(member4, _)] <- query @Member f.founder
+  Fixtures.assertArchivedContract "second ballot" f.provider second
+  (member4, _) <- Fixtures.assertSingleResult "fourth membership" =<< query @Member f.founder
   Fixtures.refuses f.founder "Already voted; hand in the one ballot to replace" do
     exerciseCmd member4 Member_Cast with
       proposalId = "changing"; closesAt = changing.closesAt; changeable = True
       vote = Yes; previous = None; previousV1 = None; featuredAppRight = None
   next <- voteV2 f member4 "changing" changing.closesAt True Yes (Some modern) None
-  None <- queryContractId f.provider modern
-  Some live <- queryContractId f.provider next
-  assert (live.vote == Yes && not live.counted)
+  Fixtures.assertArchivedContract "replaced modern ballot" f.provider modern
+  live <- Fixtures.assertLiveContract "replacement ballot" f.provider next
+  Fixtures.assertEquals "replacement vote" Yes live.vote
+  Fixtures.assertCondition "replacement ballot uncounted" (not live.counted)
   Fixtures.refuses f.provider "Votes may change until the deadline" do
     exerciseCmd changingId Proposal_Tally with ballots = []; final = False; cast = None
   setTime (addRelTime changing.closesAt (days 1))
   settled <- submit f.provider do
     exerciseCmd changingId Proposal_Tally with
       ballots = []; final = True; cast = Some [next]
-  Some result <- queryContractId f.provider settled
-  assert (result.yes == 1 && result.outcome == Some Passed)
-  [(countedId, countedBallot)] <- query @BallotV2 f.provider
+  result <- Fixtures.assertLiveContract "settled proposal" f.provider settled
+  Fixtures.assertEquals "result yes" 1 result.yes
+  Fixtures.assertEquals "result outcome" (Some Passed) result.outcome
+  (countedId, countedBallot) <- Fixtures.assertSingleResult "counted ballot" =<< query @BallotV2 f.provider
   assert countedBallot.counted
   Fixtures.refuses f.founder "Already counted" do exerciseCmd countedId BallotV2_Withdraw
 
@@ -183,15 +197,15 @@ countGuards = script do
   wrong <- voteV2 f f.member "wrong" p.closesAt False Yes None None
   Fixtures.refuses f.provider "A ballot for another proposal" do exerciseCmd wrong BallotV2_Count with proposal = p
   -- The voter may lie about the closing time and rule, but cannot make it count.
-  [(member, _)] <- query @Member f.founder
+  (member, _) <- Fixtures.assertSingleResult "founder membership" =<< query @Member f.founder
   deadline <- voteV1 f member "right" (addRelTime p.closesAt (days 1)) False Yes None
   Fixtures.refuses f.provider "Cast against another deadline" do exerciseCmd deadline Ballot_Count with proposal = p
-  [(nextMember, _)] <- query @Member f.founder
+  (nextMember, _) <- Fixtures.assertSingleResult "next founder membership" =<< query @Member f.founder
   rule <- voteV2 f nextMember "other" other.closesAt True Yes None None
   Fixtures.refuses f.provider "Cast against another rule" do exerciseCmd rule BallotV2_Count with proposal = other
   -- The separate proposal has a different id even though it shares this DAO.
   Fixtures.refuses f.provider "A ballot for another proposal" do exerciseCmd rule BallotV2_Count with proposal = p
-  Some untouched <- queryContractId f.provider otherId
+  untouched <- Fixtures.assertLiveContract "untouched proposal" f.provider otherId
   assert (untouched.yes == 0)
 
 -- | Counterfeit ballots remain syntactically valid contracts, but cannot pass the count's
@@ -201,7 +215,7 @@ countableBoundaries = script do
   f <- Fixtures.foundOneMemberDAO
   (_, p) <- propose f "p" Signal None
   original <- voteV2 f f.member "p" p.closesAt False Yes None None
-  Some b <- queryContractId f.provider original
+  b <- Fixtures.assertLiveContract "original ballot" f.provider original
   let check said changed = do
         cid <- submit (actAs [f.provider, f.founder]) do createCmd changed
         Fixtures.refuses f.provider said do exerciseCmd cid BallotV2_Count with proposal = p
@@ -224,5 +238,5 @@ countableBoundaries = script do
   checkMany <- submit (actAs [f.provider, f.founder]) do
     createCmd (b with proposalId = "choice"; vote = PickMany [0, 0])
   Fixtures.refuses f.provider "An option picked twice" do exerciseCmd checkMany BallotV2_Count with proposal = many
-  Some intact <- queryContractId f.provider choiceId
+  intact <- Fixtures.assertLiveContract "intact choice" f.provider choiceId
   assert (intact.tallies == [0, 0])

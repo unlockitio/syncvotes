@@ -21,7 +21,8 @@ quorumAndThreshold = script do
   assert (decide (rule with basis = OfAll) Signal 5 votes True == Some Failed)
   assert (decide (rule with threshold = Percent 67; quorum = 0) Signal 5 votes True == Some Failed)
   assert (decide (rule with threshold = Fraction 2 3; quorum = 0) Signal 5 votes True == Some Passed)
-  assert (not (meets Majority 1 2) && meets Majority 2 3)
+  Fixtures.assertCondition "majority rejects one of two" (not (meets Majority 1 2))
+  Fixtures.assertCondition "majority accepts two of three" (meets Majority 2 3)
   assert (not (meets (Percent 50) 0 0))
 
 -- | Early settlement requires an irreversible result, including quorum and outstanding votes.
@@ -43,12 +44,14 @@ choiceOutcomes = script do
       many = Choose with options = ["A", "B", "C"]; several = True
       rule = Fixtures.openRule with basis = OfCast
       counts = add 2 (Pick 0) (add 1 (Pick 1) (empty with tallies = [0, 0, 0]))
-  assert (counts.tallies == [2, 1, 0] && counts.picked == 3)
+  Fixtures.assertEquals "single-choice tallies" [2, 1, 0] counts.tallies
+  Fixtures.assertEquals "single-choice picks" 3 counts.picked
   assert (decide rule one 3 counts True == Some (Chosen 0))
   assert (decide rule one 3 (counts with tallies = [1, 1, 0]) True == Some Failed)
   assert (decide (rule with threshold = Percent 80) one 3 counts True == Some Failed)
   let picks = add 2 (PickMany [0, 2]) (add 1 (PickMany [1]) (empty with tallies = [0, 0, 0]))
-  assert (picks.tallies == [2, 1, 2] && picks.picked == 3)
+  Fixtures.assertEquals "multi-choice tallies" [2, 1, 2] picks.tallies
+  Fixtures.assertEquals "multi-choice picks" 3 picks.picked
   assert (decide rule many 3 picks True == Some (ChosenMany [0, 2]))
   assert (decide (rule with threshold = Percent 100) many 3 picks True == Some Failed)
   assert (decide (rule with early = True) many 3 picks False == Some (ChosenMany [0, 2]))
@@ -65,6 +68,8 @@ ruleBoundaries = script do
   assert (not (validRule (Fixtures.openRule with early = True; changeable = True)))
   assert (validSettings (Fixtures.openSettings with votingDays = 90))
   assert (not (validSettings (Fixtures.openSettings with votingDays = 91)))
-  assert (validOptions ["A", "B"] && not (validOptions ["A", "A"]))
-  assert (not (changesDao Signal) && not (changesDao (Choose with options = ["A", "B"]; several = False)))
+  Fixtures.assertCondition "distinct options valid" (validOptions ["A", "B"])
+  Fixtures.assertCondition "duplicate options invalid" (not (validOptions ["A", "A"]))
+  Fixtures.assertCondition "signal leaves DAO unchanged" (not (changesDao Signal))
+  Fixtures.assertCondition "choice leaves DAO unchanged" (not (changesDao (Choose with options = ["A", "B"]; several = False)))
   assert (changesDao Dissolve)

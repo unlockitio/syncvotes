@@ -11,14 +11,14 @@ import SyncVotes.Types (Outcome (..), Effect (..))
 archiveAccount : Script ()
 archiveAccount = script do
   f <- Fixtures.foundOneMemberDAO
-  Some live <- queryContractId f.provider f.account
+  live <- Fixtures.assertLiveContract "account" f.provider f.account
   assert (live.user == f.founder)
   trySubmit (actAs f.founder <> readAs f.provider) (do
     exerciseCmd f.account Archive) >>= Fixtures.because "requires authorizers"
-  Some _ <- queryContractId f.provider f.account
+  _ <- Fixtures.assertLiveContract "account" f.provider f.account
   submit f.provider do exerciseCmd f.account Archive
-  None <- queryContractId f.provider f.account
-  Some dao <- queryContractId f.founder f.dao
+  Fixtures.assertArchivedContract "account" f.provider f.account
+  dao <- Fixtures.assertLiveContract "DAO" f.founder f.dao
   assert (dao.creator == f.founder)
 
 -- | Replacing a profile consumes the previous one and leaves exactly the updated profile.
@@ -28,16 +28,18 @@ profileReplacement = script do
   first <- submit f.founder do
     exerciseCmd f.account Account_SetProfile with
       name = "Founder"; avatar = None; bio = "First"; previous = None
-  Some original <- queryContractId f.founder first
-  assert (original.name == "Founder" && original.bio == "First")
+  original <- Fixtures.assertLiveContract "original profile" f.founder first
+  Fixtures.assertEquals "original profile name" "Founder" original.name
+  Fixtures.assertEquals "original profile bio" "First" original.bio
   next <- submit f.founder do
     exerciseCmd f.account Account_SetProfile with
       name = "Updated"; avatar = Some "https://example.org/avatar.png"
       bio = "Second"; previous = Some first
-  None <- queryContractId f.founder first
-  Some updated <- queryContractId f.founder next
-  assert (updated.user == f.founder && updated.bio == "Second")
-  [(_, only)] <- query @Profile f.founder
+  Fixtures.assertArchivedContract "original profile" f.founder first
+  updated <- Fixtures.assertLiveContract "updated profile" f.founder next
+  Fixtures.assertEquals "updated profile user" f.founder updated.user
+  Fixtures.assertEquals "updated profile bio" "Second" updated.bio
+  (_, only) <- Fixtures.assertSingleResult "updated profile" =<< query @Profile f.founder
   assert (only.name == "Updated")
 
 -- | Invalid names or avatars, another party's profile, and provider-only changes are refused.
@@ -64,20 +66,23 @@ profileRefusals = script do
   Fixtures.refuses f.provider "requires authorizers" do
     exerciseCmd f.account Account_SetProfile with
       name = "Provider"; avatar = None; bio = ""; previous = None
-  Some retained <- queryContractId other theirs
+  retained <- Fixtures.assertLiveContract "other profile" other theirs
   assert (retained.name == "Other")
-  [] <- query @Profile f.founder
-  pure ()
+  Fixtures.assertQueryCount "founder profiles after refusals" 0 =<< query @Profile f.founder
 
 -- | Founding creates a DAO with the requested rules and a single founder membership.
 founding : Script ()
 founding = script do
   f <- Fixtures.foundOneMemberDAO
-  Some dao <- queryContractId f.founder f.dao
-  Some member <- queryContractId f.founder f.member
-  assert (dao.name == "Test DAO" && dao.members == 1 && dao.units == 1)
-  assert (dao.rules == Fixtures.openSettings && dao.decisions == Fixtures.openSettings)
-  assert (member.party == f.founder && member.share == 1)
+  dao <- Fixtures.assertLiveContract "DAO" f.founder f.dao
+  member <- Fixtures.assertLiveContract "founder membership" f.founder f.member
+  Fixtures.assertEquals "DAO name" "Test DAO" dao.name
+  Fixtures.assertEquals "DAO members" 1 dao.members
+  Fixtures.assertEquals "DAO units" 1 dao.units
+  Fixtures.assertEquals "DAO voting rules" Fixtures.openSettings dao.rules
+  Fixtures.assertEquals "DAO decision rules" Fixtures.openSettings dao.decisions
+  Fixtures.assertEquals "founder member party" f.founder member.party
+  Fixtures.assertEquals "founder member share" 1 member.share
 
 -- | Extra founding shares become a proposal while initial DAO units belong to the founder.
 foundingWithMore : Script ()
@@ -90,8 +95,10 @@ foundingWithMore = script do
       equal = False; rules = Fixtures.openSettings; decisions = Fixtures.openSettings
       shares = [(f.founder, 2)]; more = [(joiner, 3)]
       actorPays = True; public = False; featuredAppRight = None
-  Some dao <- queryContractId f.founder next
-  assert (dao.members == 1 && dao.units == 2 && not dao.equal)
+  dao <- Fixtures.assertLiveContract "batch DAO" f.founder next
+  Fixtures.assertEquals "batch DAO members" 1 dao.members
+  Fixtures.assertEquals "batch DAO units" 2 dao.units
+  Fixtures.assertCondition "batch DAO unequal shares" (not dao.equal)
   proposals <- query @Proposal f.provider
   assert (any (\(_, p) -> p.id == "batch-founding" && p.outcome == Some Passed
                     && p.action == SetShares [(joiner, 3)]) proposals)
@@ -122,4 +129,4 @@ foundingRefusals = script do
   Fixtures.refuses f.provider "requires authorizers" do
     create "Valid" [(f.founder, 1)] [] Fixtures.openSettings
   daos <- query @DAO f.provider
-  assert (length daos == 1)
+  Fixtures.assertQueryCount "DAOs after rejected founding" 1 daos

@@ -5,6 +5,7 @@ import DA.Time (addRelTime, days)
 import SyncVotes.Account (Account (..), Account_CreateDAO (..))
 import SyncVotes.Governance (DAO_Execute (..), Member (..), Member_Propose (..), Member_Cast (..), BallotV2 (..), Proposal (..), Proposal_Tally (..))
 import SyncVotes.Types (Rule (..), Basis (..), Threshold (..), Settings (..), Effect (..), Vote (..), Outcome (..))
+import qualified SyncVotes.Tests.Fixtures as Fixtures
 
 -- | Founding, proposing, voting and tallying a signal passes and executes without removing the DAO.
 lifecycle : Script ()
@@ -23,32 +24,36 @@ lifecycle = script do
       equal = True; rules = settings; decisions = settings
       shares = [(founder, 1)]; more = []; actorPays = False
       public = True; featuredAppRight = None
-  [(member, _)] <- query @Member provider
+  (member, _) <- Fixtures.assertSingleResult "founder membership" =<< query @Member provider
   proposal <- submit founder do
     exerciseCmd member Member_Propose with
       dao; pid = "signal"; title = "A decision"; description = ""
       action = Signal; rule = None; votingDays = None; featuredAppRight = None
-  Some proposed <- queryContractId provider proposal
+  proposed <- Fixtures.assertLiveContract "proposal" provider proposal
   let closesAt = proposed.closesAt
   ballot <- submit founder do
     exerciseCmd member Member_Cast with
       proposalId = "signal"; closesAt; changeable = False; vote = Yes
       previous = None; previousV1 = None; featuredAppRight = None
-  [(_, recorded)] <- query @BallotV2 provider
-  assert (recorded.voter == founder && recorded.vote == Yes && not recorded.counted)
+  (_, recorded) <- Fixtures.assertSingleResult "recorded ballot" =<< query @BallotV2 provider
+  Fixtures.assertEquals "recorded voter" founder recorded.voter
+  Fixtures.assertEquals "recorded vote" Yes recorded.vote
+  Fixtures.assertCondition "recorded ballot uncounted" (not recorded.counted)
   setTime (addRelTime closesAt (days 1))
   tallied <- submit provider do
     exerciseCmd proposal Proposal_Tally with
       ballots = []; final = True; cast = Some [ballot]
-  Some result <- queryContractId provider tallied
-  assert (result.yes == 1 && result.outcome == Some Passed)
+  result <- Fixtures.assertLiveContract "tallied proposal" provider tallied
+  Fixtures.assertEquals "tally yes" 1 result.yes
+  Fixtures.assertEquals "tally outcome" (Some Passed) result.outcome
   nextDao <- submit provider do
     exerciseCmd dao DAO_Execute with
       proposal = tallied; current = []; upTo = 1; featuredAppRight = None
-  case nextDao of
-    None -> abort "A signal must retain its DAO"
-    Some cid -> do
-      Some live <- queryContractId provider cid
-      assert (live.id == "dao" && live.members == 1 && live.units == 1)
-  [(_, executed)] <- query @Proposal provider
-  assert (executed.executed == 1 && executed.executedAt /= None)
+  cid <- Fixtures.assertPresent "DAO after signal" nextDao
+  live <- Fixtures.assertLiveContract "DAO after signal" provider cid
+  Fixtures.assertEquals "DAO id" "dao" live.id
+  Fixtures.assertEquals "DAO members" 1 live.members
+  Fixtures.assertEquals "DAO units" 1 live.units
+  (_, executed) <- Fixtures.assertSingleResult "executed proposal" =<< query @Proposal provider
+  Fixtures.assertEquals "proposal execution progress" 1 executed.executed
+  Fixtures.assertCondition "proposal execution time recorded" (executed.executedAt /= None)

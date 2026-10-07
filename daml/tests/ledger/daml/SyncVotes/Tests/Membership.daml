@@ -14,15 +14,15 @@ removeAndReshare = script do
   f <- Fixtures.foundDAOWithSettings False Fixtures.openSettings Fixtures.openSettings
   reshared <- submit (actAs [f.provider, f.founder]) do
     exerciseCmd f.member Member_Reshare with share = 5
-  None <- queryContractId f.founder f.member
-  Some bigger <- queryContractId f.founder reshared
-  assert (bigger.share == 5 && bigger.party == f.founder)
+  Fixtures.assertArchivedContract "membership" f.founder f.member
+  bigger <- Fixtures.assertLiveContract "reshared membership" f.founder reshared
+  Fixtures.assertEquals "reshared units" 5 bigger.share
+  Fixtures.assertEquals "reshared party" f.founder bigger.party
   assert (bigger.shareSince >= bigger.since)
   submit (actAs [f.provider, f.founder]) do
     exerciseCmd reshared Member_Remove
-  None <- queryContractId f.founder reshared
-  [] <- query @Member f.founder
-  pure ()
+  Fixtures.assertArchivedContract "reshared membership" f.founder reshared
+  Fixtures.assertQueryCount "remaining memberships" 0 =<< query @Member f.founder
 
 -- | Either authority alone and a zero-share reshare are refused; the member retains one share.
 membershipRefusals : Script ()
@@ -35,7 +35,7 @@ membershipRefusals = script do
   -- A membership holds units; none is no membership, and `Member_Remove` is how one leaves.
   Fixtures.refusesAll [f.provider, f.founder] "Template precondition violated" do
     exerciseCmd f.member Member_Reshare with share = 0
-  Some intact <- queryContractId f.founder f.member
+  intact <- Fixtures.assertLiveContract "intact membership" f.founder f.member
   assert (intact.share == 1)
 
 -- | An outsider cannot see or use this DAO's membership, even after founding another DAO.
@@ -43,7 +43,7 @@ outsidersSeeNoMembership : Script ()
 outsidersSeeNoMembership = script do
   f <- Fixtures.foundOneMemberDAO
   (other, otherAccount) <- Fixtures.onboard f.provider "other"
-  [] <- query @Member other
+  Fixtures.assertQueryCount "outsider-visible memberships" 0 =<< query @Member other
   Fixtures.refuses other "Could not find contract" do
     exerciseCmd f.member Member_Comment with
       proposalId = "p"; cid = "c"; body = "An outsider's word"
@@ -58,7 +58,7 @@ outsidersSeeNoMembership = script do
       equal = True; rules = Fixtures.openSettings; decisions = Fixtures.openSettings
       shares = [(other, 1)]; more = []; actorPays = False
       public = True; featuredAppRight = None
-  [(theirMember, _)] <- query @Member other
+  (theirMember, _) <- Fixtures.assertSingleResult "other DAO membership" =<< query @Member other
   -- Even with the other DAO in view, its own membership is no standing there.
   trySubmit (actAs other <> readAs f.provider) (do
     exerciseCmd theirMember Member_Propose with
@@ -75,30 +75,31 @@ commenting = script do
   comment <- submit f.founder do
     exerciseCmd f.member Member_Comment with
       proposalId = "signal"; cid = "c1"; body = "A word on it"
-  Some said <- queryContractId f.founder comment
-  assert (said.author == f.founder && said.body == "A word on it")
-  assert (said.daoId == "dao" && said.proposalId == "signal")
+  said <- Fixtures.assertLiveContract "comment" f.founder comment
+  Fixtures.assertEquals "comment author" f.founder said.author
+  Fixtures.assertEquals "comment body" "A word on it" said.body
+  Fixtures.assertEquals "comment DAO" "dao" said.daoId
+  Fixtures.assertEquals "comment proposal" "signal" said.proposalId
   -- A comment is nonconsuming: the membership stays, and a second word is a second comment.
-  Some member <- queryContractId f.founder f.member
+  member <- Fixtures.assertLiveContract "membership" f.founder f.member
   assert (member.share == 1)
   _ <- submit f.founder do
     exerciseCmd f.member Member_Comment with
       proposalId = "signal"; cid = "c2"; body = "And another"
   comments <- query @Comment f.founder
-  assert (length comments == 2)
+  Fixtures.assertQueryCount "comments" 2 comments
 
 -- | Provider-only archive is refused; joint authority removes the membership.
 archiveMember : Script ()
 archiveMember = script do
   f <- Fixtures.foundOneMemberDAO
-  Some live <- queryContractId f.founder f.member
+  live <- Fixtures.assertLiveContract "membership" f.founder f.member
   assert (live.share == 1)
   Fixtures.refuses f.provider "requires authorizers" do exerciseCmd f.member Archive
-  Some _ <- queryContractId f.founder f.member
+  _ <- Fixtures.assertLiveContract "membership" f.founder f.member
   submit (actAs [f.provider, f.founder]) do exerciseCmd f.member Archive
-  None <- queryContractId f.founder f.member
-  [] <- query @Member f.founder
-  pure ()
+  Fixtures.assertArchivedContract "membership" f.founder f.member
+  Fixtures.assertQueryCount "remaining memberships" 0 =<< query @Member f.founder
 
 -- | Provider-only archive is refused; joint authority removes the comment.
 archiveComment : Script ()
@@ -107,15 +108,14 @@ archiveComment = script do
   cid <- submit f.founder do
     exerciseCmd f.member Member_Comment with
       proposalId = "p"; cid = "c"; body = "Recorded"
-  Some live <- queryContractId f.founder cid
+  live <- Fixtures.assertLiveContract "comment" f.founder cid
   assert (live.body == "Recorded")
   trySubmit (actAs f.provider <> readAs f.founder) (do
     exerciseCmd cid Archive) >>= Fixtures.because "requires authorizers"
-  Some _ <- queryContractId f.founder cid
+  _ <- Fixtures.assertLiveContract "comment" f.founder cid
   submit (actAs [f.provider, f.founder]) do exerciseCmd cid Archive
-  None <- queryContractId f.founder cid
-  [] <- query @Comment f.founder
-  pure ()
+  Fixtures.assertArchivedContract "comment" f.founder cid
+  Fixtures.assertQueryCount "remaining comments" 0 =<< query @Comment f.founder
 
 -- | Empty, oversized and provider-authored comments are refused without creating any comment.
 commentRefusals : Script ()

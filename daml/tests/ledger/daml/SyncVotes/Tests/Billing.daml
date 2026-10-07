@@ -20,19 +20,19 @@ archiveStatements = script do
     createCmd Purse with
       provider; fingerprint = "customer"; party = Some customer
       credited = 7.0; charged = 2.0; updatedAt = now
-  Some m <- queryContractId provider meter
-  Some p <- queryContractId provider purse
-  assert (m.credited - m.charged == 4.0 && p.party == Some customer)
+  m <- Fixtures.assertLiveContract "meter" provider meter
+  p <- Fixtures.assertLiveContract "purse" provider purse
+  Fixtures.assertEquals "meter balance" 4.0 (m.credited - m.charged)
+  Fixtures.assertEquals "purse party" (Some customer) p.party
   trySubmit (actAs customer <> readAs provider) (do
     exerciseCmd purse Archive) >>= Fixtures.because "requires authorizers"
-  Some _ <- queryContractId provider purse
+  _ <- Fixtures.assertLiveContract "purse" provider purse
   submit provider do exerciseCmd meter Archive
   submit provider do exerciseCmd purse Archive
-  None <- queryContractId provider meter
-  None <- queryContractId provider purse
-  [] <- query @Meter provider
-  [] <- query @Purse provider
-  pure ()
+  Fixtures.assertArchivedContract "meter" provider meter
+  Fixtures.assertArchivedContract "purse" provider purse
+  Fixtures.assertQueryCount "remaining meters" 0 =<< query @Meter provider
+  Fixtures.assertQueryCount "remaining purses" 0 =<< query @Purse provider
 
 -- | Only provider updates replace statements, preserving keys and recording new amounts and time.
 statements : Script ()
@@ -60,24 +60,35 @@ statements = script do
     exerciseCmd meter Meter_Update with newCredited = 10.25; newCharged = 1.5
   nextPurse <- submit provider do
     exerciseCmd purse Purse_Update with newParty = Some customer; newCredited = 5.0; newCharged = 0.75
-  None <- queryContractId provider meter
-  None <- queryContractId provider purse
-  Some m <- queryContractId provider nextMeter
-  Some p <- queryContractId provider nextPurse
-  assert (m.daoId == "dao" && m.provider == provider)
-  assert (m.credited == 10.25 && m.charged == 1.5 && m.credited - m.charged == 8.75)
-  assert (m.updatedAt > now && m.updatedAt == addRelTime now (days 1))
-  assert (p.fingerprint == "fingerprint" && p.party == Some customer && p.provider == provider)
-  assert (p.credited == 5.0 && p.charged == 0.75 && p.credited - p.charged == 4.25)
+  Fixtures.assertArchivedContract "meter" provider meter
+  Fixtures.assertArchivedContract "purse" provider purse
+  m <- Fixtures.assertLiveContract "updated meter" provider nextMeter
+  p <- Fixtures.assertLiveContract "updated purse" provider nextPurse
+  Fixtures.assertEquals "meter DAO" "dao" m.daoId
+  Fixtures.assertEquals "meter provider" provider m.provider
+  Fixtures.assertEquals "meter credit" 10.25 m.credited
+  Fixtures.assertEquals "meter charge" 1.5 m.charged
+  Fixtures.assertEquals "meter balance" 8.75 (m.credited - m.charged)
+  Fixtures.assertCondition "meter updated after creation" (m.updatedAt > now)
+  Fixtures.assertEquals "meter update time" (addRelTime now (days 1)) m.updatedAt
+  Fixtures.assertEquals "purse fingerprint" "fingerprint" p.fingerprint
+  Fixtures.assertEquals "purse party" (Some customer) p.party
+  Fixtures.assertEquals "purse provider" provider p.provider
+  Fixtures.assertEquals "purse credit" 5.0 p.credited
+  Fixtures.assertEquals "purse charge" 0.75 p.charged
+  Fixtures.assertEquals "purse balance" 4.25 (p.credited - p.charged)
   assert (p.updatedAt > now)
   -- A later update changes the recorded amounts and party without altering the key.
   finalPurse <- submit provider do
     exerciseCmd nextPurse Purse_Update with
       newParty = None; newCredited = 7.0; newCharged = 2.0
-  None <- queryContractId provider nextPurse
-  Some final <- queryContractId provider finalPurse
-  assert (final.party == None && final.fingerprint == "fingerprint")
-  assert (final.credited == 7.0 && final.charged == 2.0)
-  [(onlyMeter, _)] <- query @Meter provider
-  [(onlyPurse, _)] <- query @Purse provider
-  assert (onlyMeter == nextMeter && onlyPurse == finalPurse)
+  Fixtures.assertArchivedContract "previous purse" provider nextPurse
+  final <- Fixtures.assertLiveContract "final purse" provider finalPurse
+  Fixtures.assertEquals "final purse party" None final.party
+  Fixtures.assertEquals "final purse fingerprint" "fingerprint" final.fingerprint
+  Fixtures.assertEquals "final purse credit" 7.0 final.credited
+  Fixtures.assertEquals "final purse charge" 2.0 final.charged
+  (onlyMeter, _) <- Fixtures.assertSingleResult "remaining meter" =<< query @Meter provider
+  (onlyPurse, _) <- Fixtures.assertSingleResult "remaining purse" =<< query @Purse provider
+  Fixtures.assertEquals "remaining meter id" nextMeter onlyMeter
+  Fixtures.assertEquals "remaining purse id" finalPurse onlyPurse
