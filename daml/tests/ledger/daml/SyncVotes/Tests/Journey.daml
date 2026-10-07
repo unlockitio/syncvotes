@@ -1,0 +1,165 @@
+-- | Start here for the connected ledger journey. The focused modules cover refusals and edges.
+module SyncVotes.Tests.Journey where
+
+import Daml.Script
+import DA.Time (addRelTime, days)
+import SyncVotes.Account (Account_CreateDAO (..), Account_SetProfile (..))
+import SyncVotes.Billing (Meter (..), Meter_Update (..), Purse (..), Purse_Update (..))
+import SyncVotes.Governance (DAO (..), DAO_Execute (..), DAO_BeginDissolving (..), Member (..), Member_Propose (..), Member_Comment (..), Member_Vote (..), Member_Cast (..), Proposal (..), Proposal_Tally (..), Ballot (..), BallotV2 (..))
+import qualified SyncVotes.Tests.Fixtures as Fixtures
+import SyncVotes.Types (Effect (..), Vote (..), Outcome (..))
+
+-- | One DAO's story, from accounts and founding to provider settlement and retirement.
+journey : Script ()
+journey = script do
+  provider <- allocateParty "provider"
+  (founder, account) <- Fixtures.onboard provider "founder"
+  (joiner, _) <- Fixtures.onboard provider "joiner"
+  (newcomer, _) <- Fixtures.onboard provider "newcomer"
+  -- An account lets its owner publish a profile before founding a DAO.
+  profile <- submit founder do
+    exerciseCmd account Account_SetProfile with
+      name = "Founder"; avatar = None; bio = "Let's govern together"; previous = None
+  Some identity <- queryContractId founder profile
+  assert (identity.user == founder && identity.name == "Founder")
+  dao <- submit founder do
+    exerciseCmd account Account_CreateDAO with
+      id = "journey"; daoName = "Common Ground"; description = "Our shared DAO"
+      image = None; equal = False; rules = Fixtures.openSettings
+      decisions = Fixtures.openSettings; shares = [(founder, 3), (joiner, 2)]
+      more = []; actorPays = False; public = True; featuredAppRight = None
+  Some founded <- queryContractId provider dao
+  assert (founded.creator == founder && founded.members == 2 && founded.units == 5)
+  [(founderMember, founderRecord)] <- pure . filter (\(_, m) -> m.party == founder) =<< query @Member founder
+  [(joinerMember, joinerRecord)] <- query @Member joiner
+  assert (founderRecord.share == 3 && joinerRecord.share == 2)
+
+  -- A founder proposes admitting a third member and changing the existing shares.
+  shares <- submit founder do
+    exerciseCmd founderMember Member_Propose with
+      dao; pid = "shares"; title = "Welcome a newcomer"; description = "Reshare the vote"
+      action = SetShares [(founder, 2), (joiner, 2), (newcomer, 3)]
+      rule = None; votingDays = None; featuredAppRight = None
+  Some proposed <- queryContractId provider shares
+  assert (proposed.eligible == 5 && proposed.outcome == None)
+  comment <- submit joiner do
+    exerciseCmd joinerMember Member_Comment with
+      proposalId = proposed.id; cid = "welcome"; body = "Welcome aboard"
+  Some said <- queryContractId joiner comment
+  assert (said.author == joiner && said.proposalId == proposed.id && said.daoId == founded.id)
+
+  -- Both generations of ballot count on the same proposal, from different members.
+  oldBallot <- submit founder do
+    exerciseCmd founderMember Member_Vote with
+      proposalId = proposed.id; closesAt = proposed.closesAt; changeable = False
+      vote = Yes; previous = None; featuredAppRight = None
+  newBallot <- submit joiner do
+    exerciseCmd joinerMember Member_Cast with
+      proposalId = proposed.id; closesAt = proposed.closesAt; changeable = False
+      vote = Yes; previous = None; previousV1 = None; featuredAppRight = None
+  Some oldVote <- queryContractId provider oldBallot
+  Some newVote <- queryContractId provider newBallot
+  assert (oldVote.weight == 3 && newVote.weight == 2 && not oldVote.counted && not newVote.counted)
+  setTime (addRelTime proposed.closesAt (days 1))
+  passed <- submit provider do
+    exerciseCmd shares Proposal_Tally with ballots = [oldBallot]; final = True; cast = Some [newBallot]
+  Some result <- queryContractId provider passed
+  assert (result.yes == 5 && result.eligible == 5 && result.outcome == Some Passed)
+  [(countedV1, _)] <- query @Ballot provider
+  [(countedV2, _)] <- query @BallotV2 provider
+  Some v1 <- queryContractId provider countedV1
+  Some v2 <- queryContractId provider countedV2
+  assert (v1.counted && v2.counted)
+
+  -- Execution replaces the DAO and memberships; the next batch consumes the advanced proposal.
+  [(currentFounder, _)] <- pure . filter (\(_, m) -> m.party == founder) =<< query @Member founder
+  [(currentJoiner, _)] <- query @Member joiner
+  first <- submit provider do
+    exerciseCmd dao DAO_Execute with
+      proposal = passed; current = [currentFounder, currentJoiner]; upTo = 2
+      featuredAppRight = None
+  Some partialDao <- pure first
+  Some partial <- queryContractId provider partialDao
+  assert (partial.members == 2 && partial.units == 4)
+  None <- queryContractId provider dao
+  [(progressId, progress)] <- pure . filter (\(_, p) -> p.id == "shares") =<< query @Proposal provider
+  assert (progress.executed == 2 && progress.executedAt == None)
+  last <- submit provider do
+    exerciseCmd partialDao DAO_Execute with
+      proposal = progressId; current = []; upTo = 3; featuredAppRight = None
+  Some expandedDao <- pure last
+  Some expanded <- queryContractId provider expandedDao
+  assert (expanded.members == 3 && expanded.units == 7)
+  [(newMember, newRecord)] <- query @Member newcomer
+  assert (newRecord.share == 3 && newRecord.daoId == expanded.id)
+  [(finishedShares, finished)] <- pure . filter (\(_, p) -> p.id == "shares") =<< query @Proposal provider
+  assert (finishedShares /= progressId && finished.executed == 3 && finished.executedAt /= None)
+
+  -- The provider records statements about this DAO and founder; these are bookkeeping records,
+  -- not transfers, and the ledger does not calculate charges from governance transactions.
+  now <- getTime
+  meter <- submit provider do
+    createCmd Meter with
+      provider; daoId = expanded.id; credited = 10.0; charged = 0.0; updatedAt = now
+  purse <- submit provider do
+    createCmd Purse with
+      provider; fingerprint = "founder-key"; party = Some founder
+      credited = 5.0; charged = 0.0; updatedAt = now
+  nextMeter <- submit provider do
+    exerciseCmd meter Meter_Update with newCredited = 10.0; newCharged = 1.0
+  nextPurse <- submit provider do
+    exerciseCmd purse Purse_Update with
+      newParty = Some founder; newCredited = 5.0; newCharged = 0.5
+  None <- queryContractId provider meter
+  None <- queryContractId provider purse
+  Some daoStatement <- queryContractId provider nextMeter
+  Some personalStatement <- queryContractId provider nextPurse
+  assert (daoStatement.daoId == expanded.id && daoStatement.credited - daoStatement.charged == 9.0)
+  assert (personalStatement.party == Some founder && personalStatement.credited - personalStatement.charged == 4.5)
+
+  -- Dissolution needs a new proposal after the share change: ballots cast before resharing
+  -- cannot count for a proposal opened against the new electorate.
+  [(resharedFounder, _)] <- pure . filter (\(_, m) -> m.party == founder) =<< query @Member founder
+  [(resharedJoiner, _)] <- query @Member joiner
+  dissolution <- submit founder do
+    exerciseCmd resharedFounder Member_Propose with
+      dao = expandedDao; pid = "retire"; title = "Close Common Ground"
+      description = "The work is done"; action = Dissolve
+      rule = None; votingDays = None; featuredAppRight = None
+  Some closing <- queryContractId provider dissolution
+  assert (closing.eligible == 7 && closing.outcome == None)
+  founderVote <- submit founder do
+    exerciseCmd resharedFounder Member_Cast with
+      proposalId = closing.id; closesAt = closing.closesAt; changeable = False
+      vote = Yes; previous = None; previousV1 = None; featuredAppRight = None
+  joinerVote <- submit joiner do
+    exerciseCmd resharedJoiner Member_Cast with
+      proposalId = closing.id; closesAt = closing.closesAt; changeable = False
+      vote = Yes; previous = None; previousV1 = None; featuredAppRight = None
+  newcomerVote <- submit newcomer do
+    exerciseCmd newMember Member_Cast with
+      proposalId = closing.id; closesAt = closing.closesAt; changeable = False
+      vote = Yes; previous = None; previousV1 = None; featuredAppRight = None
+  setTime (addRelTime closing.closesAt (days 1))
+  settled <- submit provider do
+    exerciseCmd dissolution Proposal_Tally with
+      ballots = []; final = True; cast = Some [founderVote, joinerVote, newcomerVote]
+  Some verdict <- queryContractId provider settled
+  assert (verdict.yes == 7 && verdict.outcome == Some Passed)
+  -- A passed dissolution first closes proposals, then execution archives the DAO.
+  dissolving <- submit provider do
+    exerciseCmd expandedDao DAO_BeginDissolving with proposal = settled
+  Some waiting <- queryContractId provider dissolving
+  assert (waiting.dissolving /= None && waiting.members == 3)
+  gone <- submit provider do
+    exerciseCmd dissolving DAO_Execute with
+      proposal = settled; current = []; upTo = 1; featuredAppRight = None
+  assert (gone == None)
+  None <- queryContractId provider dissolving
+  [] <- query @DAO provider
+  [(retiredId, retired)] <- pure . filter (\(_, p) -> p.id == "retire") =<< query @Proposal provider
+  assert (retiredId /= settled && retired.executed == 1 && retired.executedAt /= None)
+  -- Dissolution retires the DAO, but does not sweep the members or provider statements.
+  [(orphan, survivingMember)] <- query @Member newcomer
+  Some _ <- queryContractId provider nextMeter
+  assert (orphan /= newMember && survivingMember.daoId == "journey")
