@@ -1,0 +1,117 @@
+-- SPDX-License-Identifier: MIT
+-- Independent syncvotes-concordia test package, not the deployed SyncVotes 1.0.4.
+-- Concordia interface boundaries: an operator's resolved round authorizes an
+-- Action, and the resulting interface-typed Executable governs execution.
+-- Direct Action authorization is separately tested as an authority boundary;
+-- it is not evidence that every execution was preceded by a vote.
+module ConcordiaInterfaces where
+
+import Prelude hiding (Action)
+import Daml.Script
+import qualified DA.Map as Map
+import qualified DA.Set as Set
+import DA.Time (addRelTime, days)
+import Splice.Api.Token.MetadataV1 (AnyValue (..), emptyMetadata)
+import Cap.Core.Types (ExecutionAction (..), ExecutionCore (..))
+import Cap.Governance.ActionV1 (Action, Action_AuthorizeExecution (..))
+import Cap.Governance.ExecutableV1
+  (Executable, Executable_Execute (..), Executable_Cancel (..), Executable_Expire (..))
+import SyncVotes.Concordia.Governance
+import SyncVotes.Concordia.Round (Round_Resolve (..))
+import qualified SyncVotes.Concordia.Voting as V
+import Integration (args, cast, daoPins, open, plain, refuses)
+
+-- | Resolve through Round's Action_AuthorizeExecution call, then execute via
+-- Executable rather than invoking the DAO application choice from the test.
+resolvedDaoChangeUsesExecutable : Script ()
+resolvedDaoChangeUsesExecutable = script do
+  f <- open (V.SetPublic with public = True) plain
+  let targets = daoPins f f.dao
+  (round, ballot) <- cast f f.round f.alice V.Yes targets
+  now <- getTime
+  setTime (addRelTime now (days 1))
+  (executions, outcome) <- submit f.owner do
+    exerciseCmd round Round_Resolve with
+      ballots = [ballot]; weightSources = f.weights
+      expiresAt = addRelTime now (days 2); extraArgs = args
+  assert (outcome == V.Passed)
+  case executions of
+    [executable] -> do
+      result <- submit (actAs [f.owner, f.provider]) do
+        exerciseCmd executable Executable_Execute with
+          actors = [f.owner]; targets; extraArgs = args
+      case result.created of
+        [created] -> do
+          updated <- queryContractId f.owner (coerceContractId created : ContractId DAO)
+          assert (fmap (.public) updated == Some True)
+        _ -> abort "expected the interface execution to create the changed DAO"
+    _ -> abort "expected one interface executable after resolution"
+
+-- | Action admits its declared authorizer, not a stranger. Joint signatories
+-- can authorize a signal directly without a vote: this is an authority check,
+-- not a vote-only gate. A round ordinarily supplies the authorization itself.
+actionAuthorizationAuthorityBoundary : Script ()
+actionAuthorizationAuthorityBoundary = script do
+  f <- open V.Signal plain
+  stranger <- allocateParty "action-stranger"
+  now <- getTime
+  let core = ExecutionCore with
+        authorities = Set.singleton f.owner
+        availableActions = Map.singleton EA_Execute [[f.owner]]
+        opensAt = now; cancelAt = now
+        expiresAt = Some (addRelTime now (days 1)); meta = emptyMetadata
+      authorize actors = Action_AuthorizeExecution with
+        actors; executionCore = core; outcome = Some (AV_Bool True)
+        binds = Map.empty; extraArgs = args
+  let actionCid = toInterfaceContractId f.action : ContractId Action
+  rejected <- trySubmit (actAs stranger <> readAs f.owner) do
+    exerciseCmd actionCid (authorize [stranger])
+  refuses "the actors are an authorizer set of this action" rejected
+  authorized <- submit (actAs [f.owner, f.provider]) do
+    exerciseCmd actionCid (authorize [f.owner])
+  case (authorized.executionCids : [ContractId Executable]) of
+    [executable] -> do
+      result <- submit (actAs [f.owner, f.provider]) do
+        exerciseCmd executable Executable_Execute with
+          actors = [f.owner]; targets = Map.empty; extraArgs = args
+      assert (result.created == [])
+    _ -> abort "expected direct joint-authority authorization of a signal"
+
+-- | The round issues execute entitlement only: a stranger cannot execute and
+-- even the owner cannot cancel. Expire is refused before the deadline. After
+-- the deadline Execute is closed and Expire is accepted. This is a window
+-- boundary, not a vote-only gate.
+executableCancelAndExpireBoundary : Script ()
+executableCancelAndExpireBoundary = script do
+  f <- open V.Signal plain
+  (round, ballot) <- cast f f.round f.alice V.Yes Map.empty
+  now <- getTime
+  setTime (addRelTime now (days 1))
+  (executions, outcome) <- submit f.owner do
+    exerciseCmd round Round_Resolve with
+      ballots = [ballot]; weightSources = f.weights
+      expiresAt = addRelTime now (days 2); extraArgs = args
+  assert (outcome == V.Passed)
+  case executions of
+    [executable] -> do
+      outsider <- allocateParty "window-outsider"
+      denied <- trySubmit (actAs outsider <> readAs f.owner) do
+        exerciseCmd executable Executable_Execute with
+          actors = [outsider]; targets = Map.empty; extraArgs = args
+      refuses "entitled to execute" denied
+      cancelled <- trySubmit f.owner do
+        exerciseCmd executable Executable_Cancel with
+          actors = [f.owner]; extraArgs = args
+      refuses "the actors are entitled to cancel" cancelled
+      premature <- trySubmit f.owner do
+        exerciseCmd executable Executable_Expire with actor = f.owner
+      refuses "the execution has expired" premature
+      setTime (addRelTime now (days 3))
+      expired <- trySubmit f.owner do
+        exerciseCmd executable Executable_Execute with
+          actors = [f.owner]; targets = Map.empty; extraArgs = args
+      refuses "the execution window is open" expired
+      _ <- submit f.owner do
+        exerciseCmd executable Executable_Expire with actor = f.owner
+      pure ()
+    _ -> abort "expected one interface executable after resolution"

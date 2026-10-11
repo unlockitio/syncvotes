@@ -1,0 +1,40 @@
+-- SPDX-License-Identifier: MIT
+-- Membership contracts and Concordia weight and key instances.
+module SyncVotes.Concordia.Membership where
+
+import Splice.Util (HasCheckedFetch (..), require)
+import Cap.Core.Types (AuthenticKey)
+import Cap.Governance.Utils (HasWeight (..))
+import SyncVotes.Concordia.Keys (memberKey)
+
+template Member
+  with
+    provider : Party
+    creator : Party
+    daoId : Text
+    party : Party
+    since : Time
+    share : Int
+    shareSince : Time
+  where
+    signatory provider, creator
+    observer party
+    ensure share > 0
+
+    choice Member_Remove : ()
+      controller provider, creator
+      do pure ()
+
+    choice Member_Reshare : ContractId Member
+      with share : Int
+      controller provider, creator
+      do
+        require "positive share" (share > 0)
+        now <- getTime
+        create this with share; shareSince = now
+
+instance HasCheckedFetch Member AuthenticKey where
+  contractGroupId member = memberKey member.provider member.creator member.daoId member.party
+
+instance HasWeight Member where
+  weightOf member = (member.party, intToDecimal member.share)

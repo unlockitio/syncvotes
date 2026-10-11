@@ -1,3 +1,5 @@
 packages:
   - ./daml
-  - ./daml/tests/ledger
+  - ./daml/tests/syncvotes
+  - ./daml/concordia
+  - ./daml/tests/concordia

@@ -1,0 +1,80 @@
+-- SPDX-License-Identifier: MIT
+-- Independent syncvotes-concordia package: adapted SyncVotes-like founding,
+-- membership and administrative boundaries. This does not establish ledger
+-- parity with deployed SyncVotes 1.0.4 or change its original ledger suite.
+-- Integration holds the shared round fixture and voting/tally scripts.
+module SyncVotesBehavior where
+
+import Daml.Script
+import SyncVotes.Concordia.Governance
+import SyncVotes.Concordia.Membership (Member (..))
+import qualified SyncVotes.Concordia.Voting as V
+import Integration (open, ownWeight, plain, refuses)
+import DA.Time (addRelTime, days)
+
+-- | Founding creates all three memberships and the same total in the DAO;
+-- a negative share cannot be added administratively.
+founderAndShares : Script ()
+founderAndShares = script do
+  f <- open V.Signal plain
+  found <- queryContractId f.owner f.dao
+  assert (fmap (.members) found == Some 3 && fmap (.units) found == Some 10)
+  members <- query @Member f.owner
+  assert (length members == 3 && sum (map ((.share) . snd) members) == 10)
+  invalid <- trySubmit (actAs [f.provider, f.owner]) do
+    exerciseCmd f.dao DAO_ChangeShares with
+      changes = [(f.bob, -1)]; current = [snd (ownWeight f f.bob)]
+  refuses "valid share changes" invalid
+
+-- | Direct joint-authority administrative reshare archives the previous
+-- membership, updates units and shareSince, then permits removing that member.
+reshareAndRemove : Script ()
+reshareAndRemove = script do
+  f <- open V.Signal plain
+  let (_, bob) = ownWeight f f.bob
+  denied <- trySubmit (actAs f.provider <> readAs f.owner) do
+    exerciseCmd f.dao DAO_ChangeShares with changes = [(f.bob, 4)]; current = [bob]
+  refuses "requires authorizers" denied
+  setTime (addRelTime f.closesAt (days 1))
+  next <- submit (actAs [f.provider, f.owner]) do
+    exerciseCmd f.dao DAO_ChangeShares with changes = [(f.bob, 4)]; current = [bob]
+  archived <- queryContractId f.owner bob
+  assert (archived == None)
+  updated <- queryContractId f.owner next
+  assert (fmap (.units) updated == Some 11 && fmap (.members) updated == Some 3)
+  active <- query @Member f.owner
+  let reshared = [(cid, m) | (cid, m) <- active, m.party == f.bob]
+  case reshared of
+    [(cid, m)] -> do
+      assert (m.share == 4 && m.shareSince > m.since)
+      last <- submit (actAs [f.provider, f.owner]) do
+        exerciseCmd next DAO_ChangeShares with changes = [(f.bob, 0)]; current = [cid]
+      final <- queryContractId f.owner last
+      assert (fmap (.units) final == Some 7 && fmap (.members) final == Some 2)
+    _ -> abort "expected one reshared member"
+
+-- | Direct DAO_Apply is an explicit joint-authority boundary, not the normal
+-- vote/execution path. Either signatory alone is refused; even together they
+-- cannot apply SetShares. Other effects remain callable under joint authority.
+daoChangeAuthorityBoundary : Script ()
+daoChangeAuthorityBoundary = script do
+  f <- open (V.SetPublic with public = True) plain
+  alone <- trySubmit f.owner do
+    exerciseCmd f.dao DAO_Apply with effect = V.SetPublic with public = True
+  refuses "requires authorizers" alone
+  byProvider <- trySubmit (actAs f.provider <> readAs f.owner) do
+    exerciseCmd f.dao DAO_Apply with effect = V.SetPublic with public = True
+  refuses "requires authorizers" byProvider
+  shares <- trySubmit (actAs [f.owner, f.provider]) do
+    exerciseCmd f.dao DAO_Apply with
+      effect = V.SetShares with changes = [(f.bob, 4)]
+  refuses "this choice carries out no such DAO effect" shares
+  -- Joint authority can apply an ordinary effect directly. This test records
+  -- the actual trust boundary rather than implying vote-only enforcement.
+  applied <- submit (actAs [f.owner, f.provider]) do
+    exerciseCmd f.dao DAO_Apply with effect = V.SetPublic with public = True
+  case applied of
+    Some updated -> do
+      found <- queryContractId f.owner updated
+      assert (fmap (.public) found == Some True)
+    None -> abort "expected direct joint-authority DAO application"

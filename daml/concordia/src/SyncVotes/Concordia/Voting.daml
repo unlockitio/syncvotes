@@ -1,0 +1,145 @@
+-- SPDX-License-Identifier: MIT
+-- Independent SyncVotes lineage. Shapes mirror SyncVotes.Types, not its templates or DAR.
+module SyncVotes.Concordia.Voting where
+
+import DA.List (dedup, elemIndex, sortBy)
+import DA.Optional (fromSome)
+import qualified DA.Text as T
+
+data Vote = Yes | No | Abstain | Pick Int | PickMany [Int]
+  deriving (Eq, Show)
+
+data Outcome = Passed | Failed | Chosen Int | ChosenMany [Int]
+  deriving (Eq, Show)
+
+data Effect
+  = Signal
+  | Choose with options : [Text]; several : Bool
+  | SetShares with changes : [(Party, Int)]
+  | SetInfo with daoName : Text; description : Text; image : Optional Text
+  | SetRules with rules : Settings
+  | SetPublic with public : Bool
+  | Dissolve
+  | SetSettings with rules : Settings; decisions : Settings
+  deriving (Eq, Show)
+
+data Basis = OfAll | OfCast deriving (Eq, Show)
+data Threshold = Majority | Percent Int | Fraction with num : Int; den : Int
+  deriving (Eq, Show)
+data Rule = Rule with
+    basis : Basis
+    threshold : Threshold
+    quorum : Int
+    early : Bool
+    changeable : Bool
+    secret : Bool
+  deriving (Eq, Show)
+data Settings = Settings with rule : Rule; votingDays : Int
+  deriving (Eq, Show)
+
+changesDao : Effect -> Bool
+changesDao Signal = False
+changesDao (Choose {}) = False
+changesDao _ = True
+
+validRule : Rule -> Bool
+validRule r = r.quorum >= 0 && r.quorum <= 100
+  && not (r.early && r.changeable)
+  && case r.threshold of
+    Majority -> True
+    Percent p -> p >= 1 && p <= 100
+    Fraction num den -> num >= 1 && num <= den && den <= 100
+
+validSettings : Settings -> Bool
+validSettings s = validRule s.rule && s.votingDays >= 1 && s.votingDays <= 90
+
+validOptions : [Text] -> Bool
+validOptions options = length options >= 2 && length options <= 10
+  && all (\o -> o /= "" && T.length o <= 80) options
+  && dedup options == options
+
+batch : Int
+batch = 200
+maxChanges : Int
+maxChanges = 2000
+
+validChanges : Bool -> [(Party, Int)] -> Bool
+validChanges equal changes = not (null changes) && length changes <= maxChanges
+  && all (\(_, units) -> units >= 0 && (not equal || units <= 1)) changes
+  && dedup (map fst changes) == map fst changes
+
+validLabel : Int -> Text -> Bool
+validLabel n t = t /= "" && T.length t <= n
+within : Int -> Text -> Bool
+within n t = T.length t <= n
+validImage : Optional Text -> Bool
+validImage None = True
+validImage (Some url) = T.isPrefixOf "https://" (T.asciiToLower url)
+  && T.length url <= 2000 && not (any (`T.isInfixOf` url) [" ", "\n", "\t"])
+validInfo : Text -> Text -> Optional Text -> Bool
+validInfo name description image = validLabel 60 name
+  && within 10000 description && validImage image
+
+data Counts = Counts with
+    yes : Int
+    no : Int
+    abstain : Int
+    tallies : [Int]
+    picked : Int
+  deriving (Eq, Show)
+
+add : Int -> Vote -> Counts -> Counts
+add weight vote c = case vote of
+  Yes -> c with yes = c.yes + weight
+  No -> c with no = c.no + weight
+  Abstain -> c with abstain = c.abstain + weight
+  Pick i -> c with tallies = bump [i]; picked = c.picked + weight
+  PickMany is -> c with tallies = bump is; picked = c.picked + weight
+  where
+    bump is = zipWith (\j t -> if j `elem` is then t + weight else t)
+      [0 .. length c.tallies - 1] c.tallies
+
+meets : Threshold -> Int -> Int -> Bool
+meets threshold yes denom = denom > 0 && case threshold of
+  Majority -> yes * 2 > denom
+  Percent p -> yes * 100 >= denom * p
+  Fraction num den -> yes * den >= denom * num
+
+-- Concordia Count.shareOfTotal counts only Some votes; SyncVotes quorum counts
+-- abstentions too. shareOfVotes uses a single option and cannot express multi-pick
+-- denominators, OfAll, or irreversible early decisions. Keep this arithmetic local.
+decide : Rule -> Effect -> Int -> Counts -> Bool -> Optional Outcome
+decide rule action eligible c over =
+  let (isChoice, several) = case action of
+        Choose _ s -> (True, s)
+        _ -> (False, False)
+      cast = c.yes + c.no + c.abstain + c.picked
+      outstanding = eligible - cast
+      quorumMet = rule.quorum == 0 || cast * 100 >= rule.quorum * eligible
+      at = meets rule.threshold
+      lead = if isChoice then foldl max 0 c.tallies else c.yes
+      second = case (isChoice, sortBy (\p q -> compare q p) c.tallies) of
+        (True, _ :: s :: _) -> s
+        _ -> 0
+      rest = if isChoice then sum c.tallies - lead else c.no
+      (denomNow, denomWorst) = case rule.basis of
+        OfAll -> (eligible, eligible)
+        OfCast -> (lead + rest, lead + rest + outstanding)
+      passedNow = quorumMet && at lead denomNow && (not isChoice || lead > second)
+      sure = quorumMet && at lead denomWorst && (not isChoice || lead - second > outstanding)
+      lost = not (at (lead + outstanding) denomWorst)
+      won = if isChoice then Chosen (fromSome (elemIndex lead c.tallies)) else Passed
+      (manyNow, manyWorst) = case rule.basis of
+        OfAll -> (eligible, eligible)
+        OfCast -> (c.picked, c.picked + outstanding)
+      reached = [i | (i, t) <- zip [0 .. length c.tallies - 1] c.tallies,
+        quorumMet && at t manyNow]
+      settled = all (\t -> (quorumMet && at t manyWorst)
+        || not (at (t + outstanding) manyWorst)) c.tallies
+      wonMany = if null reached then Failed else ChosenMany reached
+  in if several
+      then if (rule.early && settled) || over then Some wonMany else None
+      else if rule.early && sure then Some won
+      else if rule.early && lost then Some Failed
+      else if over then Some (if passedNow then won else Failed)
+      else None

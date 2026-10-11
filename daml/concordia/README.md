@@ -1,0 +1,28 @@
+# syncvotes-concordia
+
+Independent Daml package (`daml/concordia/daml.yaml`, source `src/SyncVotes/Concordia/`). It does not depend on the original `syncvotes` DAR. The Concordia DAR paths currently point into sibling `../concordia`; packaging those dependencies portably remains open. To build locally, check out Concordia next to this repository as `../concordia`, build its `cap-core` and `cap-governance` dependencies so the DARs listed in `daml.yaml` exist, and ensure its `lib` DARs are present. Then run `~/.dpm/bin/dpm build --all` from the SyncVotes root and `~/.dpm/bin/dpm test --package-root daml/tests/concordia`. The tests are in `daml/tests/concordia`, separate from the original SyncVotes suite.
+
+| Concordia primitive | Consumer in `SyncVotes.Concordia.*` |
+| --- | --- |
+| `Cap.Governance.ActionV1.Action` | `Governance.ProposedAction` implements `view` (authorizers and binds), `action_readStateImpl` (reads `DAO` or `Target` state) and `action_authorizeExecutionImpl` (checks authority/outcome, merges binds, creates `AuthorizedEffect`). `Round_Resolve` exercises `Action_AuthorizeExecution`. |
+| `Cap.Governance.ExecutableV1.Executable` | `Governance.AuthorizedEffect` implements `view`, `executable_executeImpl` (checks targets, executes `Signal`, `Choose` or a DAO change) and `executable_cancelImpl`. The interface choices enforce execution entitlement/window, cancellation entitlement/window and expiry. |
+| `Cap.Governance.Utils.Weights.HasWeight` | `Membership.Member`: `weightOf` returns member party and decimal share; `DAO_Open` reads these weights for the electorate snapshot. |
+| `Cap.Governance.Utils.Ballots.IsBallot` | `Round.Ballot`: exposes voter/cast, pins and action CID; `consume` exercises `Ballot_Consume`. |
+| `Cap.Governance.Utils.Targets.HasState` | `Governance.DAO` exposes its encoded mutable state; `Target.Target` exposes `info`. Both are read by the action's target reader and checked against pinned state. |
+| `Splice.Util.HasCheckedFetch` | `Membership.Member` under `Keys.memberKey(provider, creator, daoId, party)`; `Governance.DAO` under `Keys.daoKey(provider, creator, daoId)`; `Target.Target` under `signedKey label target` (corresponding to `Keys.targetKey(owner, label)`); `Round.Ballot` under its `Mechanism`. |
+| `Cap.Core.Types.AuthenticKey` | `Keys` constructs DAO, member and target identities from authorities and identifiers; `Governance` and `Round` use them for weights, binds and checked target/member fetches. |
+| `Cap.Core.Types.ExecutionCore` / `ExecutionAction` | `Round_Resolve` issues a core with owner authority, `EA_Execute` for `[owner]`, opening time and expiry; `Governance.AuthorizedEffect` stores it. No `EA_Cancel` entitlement is issued. |
+| `readWeights` | `Governance.DAO_Open` reads checked member sources, then snapshots weights and shares. |
+| `weighBallots` / `consumeBallots` | `Round_Resolve` checks ballot casts against opening weights and consumes presented ballots after deciding. Local `Voting.add`/`decide` performs the actual arithmetic. |
+| `fetchGroup` / `requireMechanism` | `Round_Resolve` checks the resolver/procedure and checked-fetches the nonempty, distinct ballot group against its mechanism. |
+| `pinStatesWith` | `Round_Cast` reads the action's open target binds and pins presented target state into each ballot. |
+| `checkTarget` | `Target.setInfo` checks a pinned `Target` before `Target_SetInfo`; `Governance.AuthorizedEffect` checks a pinned `DAO` before `DAO_Apply`. Both use equality for state drift. |
+| `requireSameKeys` | `AuthorizedEffect.executable_executeImpl` requires exact bound target keys at execution. |
+| `mergeBinds` | `ProposedAction.action_authorizeExecutionImpl` merges action binds with the round's ballot pins. |
+| `admitActors` / `entitled` / `requireOpen` | Called by Concordia's `Action_AuthorizeExecution` and `Executable_Execute`/`Executable_Cancel` interface choices, not directly by this package. They check action authorizers, available execution/cancellation actors and time windows respectively. |
+
+`Voting` keeps Vote, Outcome, Effect, Rule, Settings, validation and tally together: splitting the small pure seam into Types/Rules/Tally would add imports without separating ledger responsibilities. `Round` names the template it owns; `Target` owns the target template and binding helpers. `Governance` keeps `ProposedAction`, `AuthorizedEffect`, `Account` and `DAO` together because `DAO_Open` fetches the concrete `ProposedAction` while `AuthorizedEffect` exercises `DAO_Apply`; splitting those dependencies would create an import cycle.
+
+**Deliberately local arithmetic:** `Cap.Governance.Utils.Count.rule`, `shareOfTotal` and `shareOfVotes` are not called. `rule` composes a quorum and single tally verdict, but does not supply this package's early/outstanding-vote logic. `shareOfTotal` counts only `Some` votes as turnout, whereas quorum here includes abstentions. `shareOfVotes` selects exactly one qualifying option over voted weight; it cannot represent `OfAll`'s whole-electorate basis or the multi-pick denominator (weight of voters who picked, counted once per voter). `Voting.decide` uses the opening electorate and these distinct denominators instead.
+
+`Signal`, `Choose`, `SetInfo`, `SetRules`, `SetPublic`, `SetSettings` and `Dissolve` can flow through Action authorization and Executable execution. `SetShares` has no executable: shares change administratively via `DAO_ChangeShares`. `DAO_Apply` is separately callable with **joint provider and creator authority**; interface execution is not a vote-only enforcement boundary for that choice.

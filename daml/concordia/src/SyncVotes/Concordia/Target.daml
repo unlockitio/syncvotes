@@ -1,0 +1,72 @@
+-- SPDX-License-Identifier: MIT
+-- Shared action targets, effect bindings and outcome checks for execution.
+module SyncVotes.Concordia.Target where
+
+import DA.Map (Map)
+import qualified DA.Map as Map
+import DA.Set (Set)
+import qualified DA.Set as Set
+import Splice.Api.Token.MetadataV1 (AnyValue (..), AnyContractId)
+import Splice.Util (HasCheckedFetch (..))
+import Cap.Core.Types (AuthenticKey)
+import Cap.Core.Utils (signedKey)
+import Cap.Governance.Types (Bind (..))
+import Cap.Governance.Utils (HasState (..), checkTarget)
+import SyncVotes.Concordia.Keys
+import qualified SyncVotes.Concordia.Voting as V
+
+template Target
+  with
+    owner : Party
+    label : Text
+    info : Text
+    viewers : Set Party
+  where
+    signatory owner
+    observer Set.toList viewers
+
+    choice Target_SetInfo : ContractId Target
+      with newInfo : Text
+      controller owner
+      do create this with info = newInfo
+
+instance HasCheckedFetch Target AuthenticKey where
+  contractGroupId target = signedKey target.label target
+
+instance HasState Target Text where
+  stateOf target = target.info
+
+executable : V.Effect -> Bool
+executable (V.SetShares {}) = False
+executable _ = True
+
+carries : V.Effect -> AnyValue -> Bool
+carries effect value = case (effect, value) of
+  (V.Choose options False, AV_Int i) -> i >= 0 && i < length options
+  (V.Choose options True, AV_List picks) -> not (null picks)
+    && all (\p -> case p of AV_Int i -> i >= 0 && i < length options; _ -> False) picks
+  (V.Choose {}, _) -> False
+  (_, AV_Bool passed) -> passed
+  _ -> False
+
+actionBinds : Party -> Party -> Text -> V.Effect -> Map AuthenticKey Bind
+actionBinds provider owner label effect = case effect of
+  V.Signal -> Map.empty
+  _ | V.changesDao effect ->
+        Map.singleton (daoKey provider owner label) (Bind with state = None; cid = None)
+  _ -> Map.singleton (targetKey owner label) (Bind with state = None; cid = None)
+
+setInfo
+  : AuthenticKey -> Map AuthenticKey Bind -> Map AuthenticKey AnyContractId -> Text
+  -> Update [AnyContractId]
+setInfo key binds targets newInfo = do
+  (cid, _) <- checkTarget @Target (==) key binds targets
+  updated <- exercise cid Target_SetInfo with newInfo
+  pure [coerceContractId updated]
+
+index : Int -> [a] -> Optional a
+index i xs
+  | i < 0 = None
+  | otherwise = case drop i xs of
+      x :: _ -> Some x
+      [] -> None

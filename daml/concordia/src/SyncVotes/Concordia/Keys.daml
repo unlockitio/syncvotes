@@ -1,0 +1,22 @@
+-- SPDX-License-Identifier: MIT
+-- Shared contract keys and resolver procedure for the independent Concordia package.
+module SyncVotes.Concordia.Keys where
+
+import qualified DA.Set as Set
+import Cap.Core.Types (AuthenticKey (..))
+
+targetKey : Party -> Text -> AuthenticKey
+targetKey owner label = AuthenticKey with authorities = Set.singleton owner; id = label
+
+procedureName : Text
+procedureName = "syncvotes-concordia-weighted"
+
+daoKey : Party -> Party -> Text -> AuthenticKey
+daoKey provider creator daoId = AuthenticKey with
+  authorities = Set.fromList [provider, creator]
+  id = "dao:" <> daoId
+
+memberKey : Party -> Party -> Text -> Party -> AuthenticKey
+memberKey provider creator daoId party = AuthenticKey with
+  authorities = Set.fromList [provider, creator]
+  id = daoId <> ":" <> show party

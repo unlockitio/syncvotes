@@ -1,0 +1,200 @@
+-- SPDX-License-Identifier: MIT
+-- Ballot casting and resolution against the electorate snapshot taken at opening.
+module SyncVotes.Concordia.Round where
+
+import Prelude hiding (Action)
+import DA.Map (Map)
+import qualified DA.Map as Map
+import DA.Set (Set)
+import qualified DA.Set as Set
+import DA.List (dedup)
+import Splice.Api.Token.MetadataV1
+import Splice.Util (HasCheckedFetch (..), fetchChecked, require)
+import Cap.Core.Types (AuthenticKey, ExecutionAction (..), ExecutionCore (..), Mechanism (..))
+import Cap.Core.Utils (fetchGroup, orAbort, requireMechanism)
+import Cap.Governance.ActionV1
+import Cap.Governance.ExecutableV1
+import Cap.Governance.Types (Bind)
+import Cap.Governance.Utils
+  (IsBallot (..), consumeBallots, pinStatesWith, weighBallots)
+import SyncVotes.Concordia.Keys
+import SyncVotes.Concordia.Membership (Member (..))
+import SyncVotes.Concordia.Target (carries)
+import qualified SyncVotes.Concordia.Voting as V
+
+-- A decision encoded as the value passed through Concordia's Action interface.
+asValue : V.Outcome -> AnyValue
+asValue V.Passed = AV_Bool True
+asValue V.Failed = AV_Bool False
+asValue (V.Chosen i) = AV_Int i
+asValue (V.ChosenMany is) = AV_List (map AV_Int is)
+
+template Ballot
+  with
+    owner : Party
+    provider : Party
+    voter : Party
+    mechanism : Mechanism
+    actionCid : ContractId Action
+    binds : Map AuthenticKey Bind
+    vote : V.Vote
+    share : Int
+    closesAt : Time
+  where
+    signatory voter, owner
+
+    choice Ballot_Consume : ()
+      controller owner
+      do pure ()
+
+instance HasCheckedFetch Ballot Mechanism where
+  contractGroupId ballot = ballot.mechanism
+
+instance IsBallot Ballot V.Vote (ContractId Action) where
+  castsOf ballot = Map.singleton ballot.voter (Some ballot.vote)
+  bindsOf ballot = ballot.binds
+  actionOf ballot = ballot.actionCid
+  consume cid = exercise cid Ballot_Consume
+
+validVote : V.Effect -> V.Vote -> Bool
+validVote effect vote = case (effect, vote) of
+  (V.Choose options False, V.Pick i) -> i >= 0 && i < length options
+  (V.Choose options True, V.PickMany is) ->
+    not (null is) && dedup is == is && all (\i -> i >= 0 && i < length options) is
+  (V.Choose {}, V.Abstain) -> True
+  (V.Choose {}, _) -> False
+  (_, V.Yes) -> True
+  (_, V.No) -> True
+  (_, V.Abstain) -> True
+  _ -> False
+
+template Round
+  with
+    owner : Party
+    provider : Party
+    operator : Party
+    id : Text
+    voters : Set Party
+    weightKeys : Set AuthenticKey
+    weights : Map Party Decimal
+    openingShares : Map Party Int
+    openingSince : Map Party Time
+    eligible : Int
+    openedAt : Time
+    actionCid : ContractId Action
+    closesAt : Time
+    rule : V.Rule
+    effect : V.Effect
+    roll : Map Party (ContractId Ballot)
+  where
+    signatory owner
+    observer operator :: Set.toList voters
+    ensure V.validRule rule && Set.size voters > 0 && eligible > 0
+      && case effect of
+        V.Choose options _ -> V.validOptions options
+        _ -> True
+
+    choice Round_Cast : (ContractId Round, ContractId Ballot)
+      with
+        voter : Party
+        vote : V.Vote
+        previous : Optional (ContractId Ballot)
+        -- Live membership proves identity; opening share determines weight.
+        weightKey : AuthenticKey
+        weightSource : ContractId Member
+        targets : Map AuthenticKey AnyContractId
+      controller voter
+      do
+        now <- getTime
+        require "voting is open" (now < closesAt)
+        require "voter is eligible" (Set.member voter voters)
+        require "vote matches the proposal" (validVote effect vote)
+        case Map.lookup voter roll of
+          None -> require "first vote cannot replace a ballot" (previous == None)
+          Some recorded -> do
+            require "votes cannot be changed" rule.changeable
+            require "hand in the ballot on record" (previous == Some recorded)
+            old <- fetch recorded
+            require "replacement belongs to this round" (old.voter == voter && old.actionCid == actionCid && old.closesAt == closesAt)
+            exercise recorded Ballot_Consume
+        require "the weight presented is one this round registers" (Set.member weightKey weightKeys)
+        own <- fetchChecked weightKey weightSource
+        require "the member belongs to this DAO and voter" (own.party == voter && own.provider == provider && own.creator == owner && own.daoId == id)
+        require "joined after the vote opened" (own.since <= openedAt)
+        require "membership has the opening identity"
+          (Map.lookup voter openingSince == Some own.since)
+        share <- orAbort "voter absent from opening weights" (Map.lookup voter openingShares)
+        action <- fetch actionCid
+        pinned <- pinStatesWith (action_readStateImpl action) (view action).binds targets
+        let mechanism = Mechanism with
+              resolver = targetKey owner id
+              resolverCid = None
+              procedure = procedureName
+              id
+        ballot <- create Ballot with
+          owner; provider; voter; mechanism; actionCid; binds = pinned; vote; share; closesAt
+        next <- create this with roll = Map.insert voter ballot roll
+        pure (next, ballot)
+
+    choice Round_Resolve : ([ContractId Executable], V.Outcome)
+      with
+        ballots : [ContractId Ballot]
+        weightSources : Map AuthenticKey (ContractId Member)
+        expiresAt : Time
+        extraArgs : ExtraArgs
+      controller operator
+      do
+        now <- getTime
+        require "voting has closed or early resolution is enabled" (now >= closesAt || rule.early)
+        require "changeable votes wait until close" (not rule.changeable || now >= closesAt)
+        require "execution expires after resolution" (expiresAt > now)
+        let mechanism = Mechanism with
+              resolver = targetKey owner id
+              resolverCid = None
+              procedure = procedureName
+              id
+        requireMechanism (targetKey owner id) (coerceContractId self) procedureName mechanism
+        presented <- fetchGroup mechanism ballots
+        require "supply exactly the ballots recorded by this round"
+          (Map.fromList [(b.voter, cid) | (cid, b) <- presented] == roll
+            && length presented == Map.size roll)
+        require "ballots are for this DAO, action and window"
+          (all (\b -> b.owner == owner && b.provider == provider
+            && b.actionCid == actionCid && b.closesAt == closesAt) (map snd presented))
+        require "the presented weight contracts are exactly the registered ones"
+          (Map.keys weightSources == Set.toList weightKeys)
+        require "opening weights are complete" (Map.size openingShares == Set.size voters
+          && Map.size openingSince == Set.size voters
+          && sum (Map.values openingShares) == eligible)
+        casts <- weighBallots Some weights presented
+        require "ballot share matches the registered weight"
+          (all (\(_, b) -> Map.lookup b.voter weights == Some (intToDecimal b.share)) presented)
+        let initial = V.Counts with
+              yes = 0; no = 0; abstain = 0
+              tallies = case effect of V.Choose options _ -> map (const 0) options; _ -> []
+              picked = 0
+            counts = foldl (\c (_, b) -> V.add b.share b.vote c) initial presented
+            outcome = V.decide rule effect eligible counts (now >= closesAt)
+        decided <- orAbort "the round is not settled yet" outcome
+        consumeBallots presented
+        if not (carries effect (asValue decided))
+          then pure ([], decided)
+          else do
+            pinned <- case map (bindsOf . snd) presented of
+              [] -> pure Map.empty
+              first :: rest -> do
+                require "ballot target pins agree" (all (== first) rest)
+                pure first
+            result <- exercise actionCid Action_AuthorizeExecution with
+              actors = [owner]
+              executionCore = ExecutionCore with
+                authorities = Set.singleton owner
+                availableActions = Map.singleton EA_Execute [[owner]]
+                opensAt = now
+                cancelAt = now
+                expiresAt = Some expiresAt
+                meta = emptyMetadata
+              outcome = Some (asValue decided)
+              binds = pinned
+              extraArgs
+            pure (result.executionCids, decided)

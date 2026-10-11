@@ -1,0 +1,97 @@
+-- SPDX-License-Identifier: MIT
+-- Parity seam: original SyncVotes.Types/Rules/Tally -> SyncVotes.Concordia.Voting pure functions.
+-- Shapes: Vote Yes/No/Abstain/Pick/PickMany; Outcome Passed/Failed/Chosen/
+-- ChosenMany; Effect Signal/Choose/SetShares/SetInfo/SetRules/SetPublic/
+-- Dissolve/SetSettings; Basis, Threshold, Rule, Settings are represented here.
+--
+-- Independent syncvotes-concordia package: these scripts check adapted
+-- SyncVotes-like arithmetic alone. Integration checks the same rule on ledger,
+-- through Round's own ballots and DAO memberships; ConcordiaInterfaces checks
+-- the external Action/Executable interface boundary. Ledger parity
+-- with the original package is still NOT established. This lineage now carries
+-- out Signal, Choose, SetInfo, SetRules, SetPublic, SetSettings and Dissolve
+-- through Concordia's Action and Executable interfaces, and holds founding and
+-- a direct joint-authority membership change. What it still lacks: SetShares
+-- has no executable at all, so batched vote-gated share changes and their
+-- progress are missing and a Round refuses to propose one; there are no
+-- comments, no billing and no activity markers; and a DAO change applied by the
+-- DAO's own joint authority is not itself gated on a passed round, as the
+-- original DAO_Execute is not either.
+module Parity where
+
+import Daml.Script
+import SyncVotes.Concordia.Voting
+
+empty : Counts
+empty = Counts with yes = 0; no = 0; abstain = 0; tallies = []; picked = 0
+
+open : Rule
+open = Rule with
+  basis = OfAll
+  threshold = Majority
+  quorum = 0
+  early = False
+  changeable = False
+  secret = False
+
+arithmetic : Script ()
+arithmetic = script do
+  let rule = open with basis = OfCast; quorum = 60
+      votes = add 1 Abstain (add 2 Yes (add 1 No empty))
+  assert (decide rule Signal 5 votes True == Some Passed)
+  assert (decide (rule with quorum = 100) Signal 5 votes True == Some Failed)
+  assert (decide (rule with basis = OfAll) Signal 5 votes True == Some Failed)
+  assert (decide (rule with threshold = Percent 67; quorum = 0) Signal 5 votes True == Some Failed)
+  assert (decide (rule with threshold = Fraction 2 3; quorum = 0) Signal 5 votes True == Some Passed)
+  assert (not (meets Majority 1 2))
+  assert (meets Majority 2 3)
+  assert (not (meets (Percent 50) 0 0))
+
+earlyBoundaries : Script ()
+earlyBoundaries = script do
+  let rule = open with early = True
+  assert (decide rule Signal 5 (empty with yes = 3) False == Some Passed)
+  assert (decide rule Signal 5 (empty with no = 3) False == Some Failed)
+  assert (decide rule Signal 5 (empty with yes = 2) False == None)
+  assert (decide (rule with quorum = 100) Signal 5 (empty with yes = 3) False == None)
+  assert (decide (rule with quorum = 100) Signal 5 (empty with yes = 3) True == Some Failed)
+  assert (decide open Signal 5 (empty with yes = 5) False == None)
+  assert (decide open Signal 5 (empty with yes = 5) True == Some Passed)
+
+choices : Script ()
+choices = script do
+  let one = Choose with options = ["A", "B", "C"]; several = False
+      many = Choose with options = ["A", "B", "C"]; several = True
+      rule = open with basis = OfCast
+      counts = add 2 (Pick 0) (add 1 (Pick 1) (empty with tallies = [0, 0, 0]))
+  assert (counts.tallies == [2, 1, 0] && counts.picked == 3)
+  assert (decide rule one 3 counts True == Some (Chosen 0))
+  assert (decide rule one 3 (counts with tallies = [1, 1, 0]) True == Some Failed)
+  assert (decide (rule with threshold = Percent 80) one 3 counts True == Some Failed)
+  let picks = add 2 (PickMany [0, 2]) (add 1 (PickMany [1]) (empty with tallies = [0, 0, 0]))
+  assert (picks.tallies == [2, 1, 2] && picks.picked == 3)
+  assert (decide rule many 3 picks True == Some (ChosenMany [0, 2]))
+  assert (decide (rule with threshold = Percent 100) many 3 picks True == Some Failed)
+  assert (decide (rule with early = True) many 3 picks False == Some (ChosenMany [0, 2]))
+  assert (decide (rule with early = True) one 5 counts False == None)
+
+validation : Script ()
+validation = script do
+  assert (validRule (open with threshold = Percent 1; quorum = 100))
+  assert (validRule (open with threshold = Fraction 1 100))
+  assert (not (validRule (open with threshold = Fraction 0 1)))
+  assert (not (validRule (open with threshold = Fraction 1 101)))
+  assert (not (validRule (open with threshold = Percent 0)))
+  assert (not (validRule (open with quorum = -1)))
+  assert (not (validRule (open with early = True; changeable = True)))
+  assert (validSettings (Settings with rule = open; votingDays = 90))
+  assert (not (validSettings (Settings with rule = open; votingDays = 91)))
+  assert (validOptions ["A", "B"])
+  assert (not (validOptions ["A", "A"]))
+  assert (not (validOptions ["A"]))
+  assert (not (changesDao Signal))
+  assert (not (changesDao (Choose with options = ["A", "B"]; several = False)))
+  assert (changesDao Dissolve)
+  assert (validInfo "DAO" "" None)
+  assert (not (validInfo "" "" None))
+  assert (not (validImage (Some "http://example.org")))

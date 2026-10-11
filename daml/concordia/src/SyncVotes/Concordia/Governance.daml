@@ -1,0 +1,278 @@
+-- SPDX-License-Identifier: MIT
+-- DAO founding and authority-bound execution. DAO_Open checks ProposedAction,
+-- while AuthorizedEffect exercises DAO_Apply, so these templates share a module.
+module SyncVotes.Concordia.Governance where
+
+import Prelude hiding (Action)
+import qualified DA.Text as T
+import Splice.Api.Token.MetadataV1
+import Cap.Core.Types (ExecutionCore)
+import Cap.Core.Utils (orAbort)
+import Cap.Governance.ActionV1
+import Cap.Governance.ExecutableV1
+import Cap.Governance.Types (Bind)
+import Cap.Governance.Utils (checkTarget, mergeBinds, readState, requireSameKeys)
+import DA.Map (Map)
+import qualified DA.Map as Map
+import qualified DA.Set as Set
+import DA.List (dedup)
+import DA.Optional (isSome)
+import DA.Time (addRelTime, days)
+import Splice.Util (HasCheckedFetch (..), require)
+import Cap.Core.Types (AuthenticKey)
+import Cap.Governance.Utils (HasState (..), readWeights)
+import SyncVotes.Concordia.Keys (daoKey, targetKey)
+import SyncVotes.Concordia.Membership (Member (..), Member_Remove (..), Member_Reshare (..))
+import SyncVotes.Concordia.Round (Round (..))
+import SyncVotes.Concordia.Target (Target, executable, carries, actionBinds, setInfo, index)
+import qualified SyncVotes.Concordia.Voting as V
+
+-- A proposed effect carries the DAO authority into its authorized execution.
+template ProposedAction
+  with
+    owner : Party
+    provider : Party
+    targetLabel : Text
+    effect : V.Effect
+    viewers : Set.Set Party
+  where
+    signatory owner, provider
+    observer Set.toList viewers
+    ensure executable effect && case effect of
+      V.SetRules rules -> V.validSettings rules
+      V.SetSettings rules decisions -> V.validSettings rules && V.validSettings decisions
+      V.SetInfo name description image -> V.validInfo name description image
+      V.Choose options _ -> V.validOptions options
+      _ -> True
+
+    interface instance Action for ProposedAction where
+      view = ActionView with
+        authorizers = [[owner]]
+        binds = actionBinds provider owner targetLabel effect
+        meta = emptyMetadata
+
+      action_readStateImpl key cid
+        | key == daoKey provider owner targetLabel = readState @DAO key cid
+        | key == targetKey owner targetLabel = readState @Target key cid
+        | otherwise = abort "unknown action target"
+
+      action_authorizeExecutionImpl _ args = do
+        binds <- mergeBinds (actionBinds provider owner targetLabel effect) args.binds
+        require "execution authority must be the action owner"
+          (args.executionCore.authorities == Set.singleton owner)
+        require "the outcome must be one this action can carry out"
+          (optional False (carries effect) args.outcome)
+        cid <- create AuthorizedEffect with
+          owner; provider; targetLabel; effect
+          core = args.executionCore; binds; outcome = args.outcome
+        pure Action_AuthorizeExecutionResult with
+          executionCids = [toInterfaceContractId cid]; meta = emptyMetadata
+
+-- The authorized effect is consumed when executed, so it runs at most once.
+template AuthorizedEffect
+  with
+    owner : Party
+    provider : Party
+    targetLabel : Text
+    effect : V.Effect
+    core : ExecutionCore
+    binds : Map AuthenticKey Bind
+    outcome : Optional AnyValue
+  where
+    signatory owner, provider
+
+    interface instance Executable for AuthorizedEffect where
+      view = ExecutableView with executionCore = core; binds; outcome
+
+      executable_cancelImpl _ = pure Executable_CancelResult with meta = emptyMetadata
+
+      executable_executeImpl targets _ = do
+        requireSameKeys binds targets
+        created <- case effect of
+          V.Signal -> pure []
+          V.Choose options _ -> do
+            picks <- case outcome of
+              Some (AV_Int i) -> pure [i]
+              Some (AV_List vs) -> forA vs (\v -> case v of
+                AV_Int i -> pure i
+                _ -> abort "the authorized choice is not an option index")
+              _ -> abort "the authorized outcome is not a choice"
+            chosen <- forA picks (\i -> orAbort "no such option" (index i options))
+            setInfo (targetKey owner targetLabel) binds targets (T.intercalate ", " chosen)
+          _ | V.changesDao effect -> do
+                (cid, _) <- checkTarget @DAO (==) (daoKey provider owner targetLabel) binds targets
+                result <- exercise cid DAO_Apply with effect
+                pure (case result of
+                  Some updated -> [coerceContractId updated]
+                  None -> [])
+          _ -> abort "this package carries out no such effect"
+        pure Executable_ExecuteResult with created; meta = emptyMetadata
+
+-- Founding requires a positive member table and carries provider authority.
+template Account
+  with
+    provider : Party
+    user : Party
+  where
+    signatory provider
+    observer user
+
+    nonconsuming choice Account_Found : ContractId DAO
+      with
+        daoId : Text
+        name : Text
+        description : Text
+        image : Optional Text
+        equal : Bool
+        rules : V.Settings
+        decisions : V.Settings
+        shares : [(Party, Int)]
+      controller user
+      do
+        require "valid founding information" (V.validInfo name description image)
+        require "valid founding settings" (V.validSettings rules && V.validSettings decisions)
+        require "valid founding shares" (V.validChanges equal shares
+          && length shares <= V.batch && all (\(_, units) -> units > 0) shares
+          && user `elem` map fst shares)
+        now <- getTime
+        forA shares (\(party, share) -> create Member with
+          provider; creator = user; daoId; party; since = now; share
+          shareSince = now)
+        create DAO with
+           provider; creator = user; daoId; name; description; image; equal
+           rules; decisions; members = length shares; units = sum (map snd shares)
+           public = False; dissolving = None; createdAt = now
+
+-- Administrative changes are joint-authority operations, separate from votes.
+template DAO
+  with
+    provider : Party
+    creator : Party
+    daoId : Text
+    name : Text
+    description : Text
+    image : Optional Text
+    equal : Bool
+    rules : V.Settings
+    decisions : V.Settings
+    members : Int
+    units : Int
+    public : Bool
+    dissolving : Optional Time
+    createdAt : Time
+  where
+    signatory provider, creator
+    ensure members > 0 && units > 0
+
+    choice DAO_ChangeShares : ContractId DAO
+      with
+        changes : [(Party, Int)]
+        current : [ContractId Member]
+      controller provider, creator
+      do
+        require "a dissolving DAO takes no further change" (dissolving == None)
+        require "valid share changes" (V.validChanges equal changes && length changes <= V.batch)
+        require "distinct current members" (dedup current == current)
+        existing <- forA current (\cid -> do
+          member <- fetch cid
+          require "not a member of this DAO" (member.provider == provider
+            && member.creator == creator && member.daoId == daoId)
+          require "member not in change" (isSome (lookup member.party changes))
+          pure (member.party, (cid, member.share)))
+        require "duplicate current party" (dedup (map fst existing) == map fst existing)
+        now <- getTime
+        deltas <- forA changes (\(party, share) -> case lookup party existing of
+          Some (cid, had) -> do
+            if share == 0 then exercise cid Member_Remove
+            else if share /= had then do
+              _ <- exercise cid Member_Reshare with share
+              pure ()
+            else pure ()
+            pure (if share == 0 then -1 else 0, share - had)
+          None -> if share == 0 then pure (0, 0) else do
+            _ <- create Member with
+              provider; creator; daoId; party; since = now; share; shareSince = now
+            pure (1, share))
+        let nextMembers = members + sum (map fst deltas)
+            nextUnits = units + sum (map snd deltas)
+        require "DAO must retain members and units" (nextMembers > 0 && nextUnits > 0)
+        create this with members = nextMembers; units = nextUnits
+
+    -- Joint DAO authority applies a decided effect; SetShares is not executable.
+    choice DAO_Apply : Optional (ContractId DAO)
+      with
+        effect : V.Effect
+      controller provider, creator
+      do
+        require "a dissolving DAO takes no further change" (dissolving == None)
+        case effect of
+          V.SetRules newRules -> do
+            require "valid voting rules" (V.validSettings newRules)
+            Some <$> create this with rules = newRules
+          V.SetPublic newPublic -> Some <$> create this with public = newPublic
+          V.SetSettings newRules newDecisions -> do
+            require "valid voting settings"
+              (V.validSettings newRules && V.validSettings newDecisions)
+            Some <$> create this with rules = newRules; decisions = newDecisions
+          V.Dissolve -> do
+            now <- getTime
+            Some <$> create this with dissolving = Some now
+          V.SetInfo newName newDescription newImage -> do
+            require "valid DAO information"
+              (V.validInfo newName newDescription newImage)
+            Some <$> create this with
+              name = newName; description = newDescription; image = newImage
+          _ -> abort "this choice carries out no such DAO effect"
+
+    nonconsuming choice DAO_Open : ContractId Round
+      with
+        id : Text
+        operator : Party
+        actionCid : ContractId Action
+        effect : V.Effect
+        rule : V.Rule
+        votingDays : Int
+        sources : Map AuthenticKey (ContractId Member)
+      controller creator
+      do
+        require "a dissolving DAO opens no round" (dissolving == None)
+        require "round targets this DAO" (id == daoId)
+        require "valid voting settings" (V.validSettings (V.Settings with rule; votingDays))
+        require "the action is supported" (executable effect)
+        require "DAO changes use the DAO's voting settings"
+          (not (V.changesDao effect) || (V.Settings with rule; votingDays) == rules)
+        action <- fetch (coerceContractId actionCid : ContractId ProposedAction)
+        require "the action belongs to this DAO and matches its effect"
+          (action.owner == creator && action.provider == provider
+            && action.effect == effect
+            && (not (V.changesDao effect) || action.targetLabel == daoId))
+        now <- getTime
+        registered <- readWeights (Set.fromList (Map.keys sources)) sources
+        membersRead <- forA (Map.values sources) fetch
+        require "members belong to this DAO" (all (\m -> m.provider == provider
+          && m.creator == creator && m.daoId == daoId && m.since <= now
+          && m.shareSince <= now) membersRead)
+        require "complete current electorate" (length membersRead == members
+          && sum (map (.share) membersRead) == units
+          && dedup (map (.party) membersRead) == map (.party) membersRead)
+        let snapshot = Map.fromListWithR (+) (Map.values registered)
+        create Round with
+          owner = creator; provider; operator; id
+          voters = Set.fromList (map (.party) membersRead)
+          weightKeys = Set.fromList (Map.keys sources)
+          weights = snapshot
+          openingShares = Map.fromList [(m.party, m.share) | m <- membersRead]
+          openingSince = Map.fromList [(m.party, m.since) | m <- membersRead]
+          eligible = units; openedAt = now
+          actionCid; closesAt = addRelTime now (days votingDays); rule; effect
+          roll = Map.empty
+
+instance HasCheckedFetch DAO AuthenticKey where
+  contractGroupId dao = daoKey dao.provider dao.creator dao.daoId
+
+instance HasState DAO Text where
+  stateOf dao = show dao.name <> "\x1f" <> show dao.description
+    <> "\x1f" <> show dao.image <> "\x1f" <> show dao.equal
+    <> "\x1f" <> show dao.rules <> "\x1f" <> show dao.decisions
+    <> "\x1f" <> show dao.members <> "\x1f" <> show dao.units
+    <> "\x1f" <> show dao.public <> "\x1f" <> show dao.dissolving
