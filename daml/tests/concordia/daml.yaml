@@ -8,13 +8,13 @@ dependencies:
   - daml-script
 data-dependencies:
   - ../../concordia/.daml/dist/syncvotes-concordia-0.1.0.dar
-  - ../../../../concordia/cap-core/types/.daml/dist/cap-core-types-0.1.0.dar
-  - ../../../../concordia/cap-core/utils/.daml/dist/cap-core-utils-0.1.0.dar
-  - ../../../../concordia/cap-governance/types/.daml/dist/cap-governance-types-0.1.0.dar
-  - ../../../../concordia/cap-governance/interfaces/executable/.daml/dist/cap-governance-executable-v1-0.1.0.dar
-  - ../../../../concordia/cap-governance/interfaces/action/.daml/dist/cap-governance-action-v1-0.1.0.dar
-  - ../../../../concordia/cap-governance/utils/.daml/dist/cap-governance-utils-0.1.0.dar
-  - ../../../../concordia/lib/splice-api-token-metadata-v1-1.0.0.dar
-  - ../../../../concordia/lib/splice-util-0.1.7.dar
+  - ../../concordia/lib/cap-core-types-0.1.0.dar
+  - ../../concordia/lib/cap-core-utils-0.1.0.dar
+  - ../../concordia/lib/cap-governance-types-0.1.0.dar
+  - ../../concordia/lib/cap-governance-executable-v1-0.1.0.dar
+  - ../../concordia/lib/cap-governance-action-v1-0.1.0.dar
+  - ../../concordia/lib/cap-governance-utils-0.1.0.dar
+  - ../../concordia/lib/splice-api-token-metadata-v1-1.0.0.dar
+  - ../../concordia/lib/splice-util-0.1.7.dar
 build-options:
   - --target=2.1

@@ -160,6 +160,17 @@ signatories and observers. After deploying, check the vetting on every network (
 
 There is no local ledger; what runs locally is the type-checker, the linter and the build.
 Building the DAR needs `dpm`, which is x86-64 only (Rosetta on Apple silicon).
+The independent Concordia package needs its data dependencies generated once before
+`dpm build --all`, without a neighboring Concordia checkout:
+
+```sh
+python3 scripts/build-concordia-deps.py
+```
+
+This downloads pinned sources and builds six Concordia DARs with SDK 3.4.11;
+it verifies and installs two pinned Splice DARs into the ignored
+`daml/concordia/lib/`. See [dependency provenance](daml/concordia/lib/README.md)
+and `SHA256SUMS` there. The resulting SyncVotes workspace uses SDK 3.5.7.
 
 ```sh
 pnpm daml:codegen   # builds the DAR and writes the bindings to daml.js/
