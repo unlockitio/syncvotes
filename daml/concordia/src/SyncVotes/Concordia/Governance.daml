@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MIT
--- DAO founding and authority-bound execution. DAO_Open checks ProposedAction,
--- while AuthorizedEffect exercises DAO_Apply, so these templates share a module.
+-- DAO founding and authority-bound execution. DAO_Open checks Proposal,
+-- while ProposalExecution exercises DAO_Apply, so these templates share a module.
 module SyncVotes.Concordia.Governance where
 
 import Prelude hiding (Action)
@@ -22,13 +22,13 @@ import Splice.Util (HasCheckedFetch (..), require)
 import Cap.Core.Types (AuthenticKey)
 import Cap.Governance.Utils (HasState (..), readWeights)
 import SyncVotes.Concordia.Keys (daoKey, targetKey)
-import SyncVotes.Concordia.Membership (Member (..), Member_Remove (..), Member_Reshare (..))
+import SyncVotes.Concordia.Member (Member (..), Member_Remove (..), Member_Reshare (..))
 import SyncVotes.Concordia.Round (Round (..))
 import SyncVotes.Concordia.Target (Target, executable, carries, actionBinds, setInfo, index)
-import qualified SyncVotes.Concordia.Voting as V
+import qualified SyncVotes.Concordia.Types as V
 
 -- A proposed effect carries the DAO authority into its authorized execution.
-template ProposedAction
+template Proposal
   with
     owner : Party
     provider : Party
@@ -45,7 +45,7 @@ template ProposedAction
       V.Choose options _ -> V.validOptions options
       _ -> True
 
-    interface instance Action for ProposedAction where
+    interface instance Action for Proposal where
       view = ActionView with
         authorizers = [[owner]]
         binds = actionBinds provider owner targetLabel effect
@@ -62,14 +62,14 @@ template ProposedAction
           (args.executionCore.authorities == Set.singleton owner)
         require "the outcome must be one this action can carry out"
           (optional False (carries effect) args.outcome)
-        cid <- create AuthorizedEffect with
+        cid <- create ProposalExecution with
           owner; provider; targetLabel; effect
           core = args.executionCore; binds; outcome = args.outcome
         pure Action_AuthorizeExecutionResult with
           executionCids = [toInterfaceContractId cid]; meta = emptyMetadata
 
 -- The authorized effect is consumed when executed, so it runs at most once.
-template AuthorizedEffect
+template ProposalExecution
   with
     owner : Party
     provider : Party
@@ -81,7 +81,7 @@ template AuthorizedEffect
   where
     signatory owner, provider
 
-    interface instance Executable for AuthorizedEffect where
+    interface instance Executable for ProposalExecution where
       view = ExecutableView with executionCore = core; binds; outcome
 
       executable_cancelImpl _ = pure Executable_CancelResult with meta = emptyMetadata
@@ -117,7 +117,7 @@ template Account
     signatory provider
     observer user
 
-    nonconsuming choice Account_Found : ContractId DAO
+    nonconsuming choice Account_CreateDAO : ContractId DAO
       with
         daoId : Text
         name : Text
@@ -241,7 +241,7 @@ template DAO
         require "the action is supported" (executable effect)
         require "DAO changes use the DAO's voting settings"
           (not (V.changesDao effect) || (V.Settings with rule; votingDays) == rules)
-        action <- fetch (coerceContractId actionCid : ContractId ProposedAction)
+        action <- fetch (coerceContractId actionCid : ContractId Proposal)
         require "the action belongs to this DAO and matches its effect"
           (action.owner == creator && action.provider == provider
             && action.effect == effect

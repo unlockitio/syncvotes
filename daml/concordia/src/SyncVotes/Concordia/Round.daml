@@ -18,9 +18,9 @@ import Cap.Governance.Types (Bind)
 import Cap.Governance.Utils
   (IsBallot (..), consumeBallots, pinStatesWith, weighBallots)
 import SyncVotes.Concordia.Keys
-import SyncVotes.Concordia.Membership (Member (..))
+import SyncVotes.Concordia.Member (Member (..))
 import SyncVotes.Concordia.Target (carries)
-import qualified SyncVotes.Concordia.Voting as V
+import qualified SyncVotes.Concordia.Types as V
 
 -- A decision encoded as the value passed through Concordia's Action interface.
 asValue : V.Outcome -> AnyValue
@@ -94,7 +94,7 @@ template Round
         V.Choose options _ -> V.validOptions options
         _ -> True
 
-    choice Round_Cast : (ContractId Round, ContractId Ballot)
+    choice Member_Cast : (ContractId Round, ContractId Ballot)
       with
         voter : Party
         vote : V.Vote
@@ -136,7 +136,7 @@ template Round
         next <- create this with roll = Map.insert voter ballot roll
         pure (next, ballot)
 
-    choice Round_Resolve : ([ContractId Executable], V.Outcome)
+    choice Proposal_Tally : ([ContractId Executable], V.Outcome)
       with
         ballots : [ContractId Ballot]
         weightSources : Map AuthenticKey (ContractId Member)

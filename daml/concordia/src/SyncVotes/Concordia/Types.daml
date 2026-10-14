@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MIT
 -- Independent SyncVotes lineage. Shapes mirror SyncVotes.Types, not its templates or DAR.
-module SyncVotes.Concordia.Voting where
+module SyncVotes.Concordia.Types where
 
 import DA.List (dedup, elemIndex, sortBy)
 import DA.Optional (fromSome)

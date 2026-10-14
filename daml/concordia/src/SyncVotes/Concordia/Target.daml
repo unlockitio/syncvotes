@@ -13,7 +13,7 @@ import Cap.Core.Utils (signedKey)
 import Cap.Governance.Types (Bind (..))
 import Cap.Governance.Utils (HasState (..), checkTarget)
 import SyncVotes.Concordia.Keys
-import qualified SyncVotes.Concordia.Voting as V
+import qualified SyncVotes.Concordia.Types as V
 
 template Target
   with

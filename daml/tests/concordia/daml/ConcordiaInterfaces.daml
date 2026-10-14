@@ -17,8 +17,8 @@ import Cap.Governance.ActionV1 (Action, Action_AuthorizeExecution (..))
 import Cap.Governance.ExecutableV1
   (Executable, Executable_Execute (..), Executable_Cancel (..), Executable_Expire (..))
 import SyncVotes.Concordia.Governance
-import SyncVotes.Concordia.Round (Round_Resolve (..))
-import qualified SyncVotes.Concordia.Voting as V
+import SyncVotes.Concordia.Round (Proposal_Tally (..))
+import qualified SyncVotes.Concordia.Types as V
 import Integration (args, cast, daoPins, open, plain, refuses)
 
 -- | Resolve through Round's Action_AuthorizeExecution call, then execute via
@@ -31,7 +31,7 @@ resolvedDaoChangeUsesExecutable = script do
   now <- getTime
   setTime (addRelTime now (days 1))
   (executions, outcome) <- submit f.owner do
-    exerciseCmd round Round_Resolve with
+    exerciseCmd round Proposal_Tally with
       ballots = [ballot]; weightSources = f.weights
       expiresAt = addRelTime now (days 2); extraArgs = args
   assert (outcome == V.Passed)
@@ -88,7 +88,7 @@ executableCancelAndExpireBoundary = script do
   now <- getTime
   setTime (addRelTime now (days 1))
   (executions, outcome) <- submit f.owner do
-    exerciseCmd round Round_Resolve with
+    exerciseCmd round Proposal_Tally with
       ballots = [ballot]; weightSources = f.weights
       expiresAt = addRelTime now (days 2); extraArgs = args
   assert (outcome == V.Passed)

@@ -7,8 +7,8 @@ module SyncVotesBehavior where
 
 import Daml.Script
 import SyncVotes.Concordia.Governance
-import SyncVotes.Concordia.Membership (Member (..))
-import qualified SyncVotes.Concordia.Voting as V
+import SyncVotes.Concordia.Member (Member (..))
+import qualified SyncVotes.Concordia.Types as V
 import Integration (open, ownWeight, plain, refuses)
 import DA.Time (addRelTime, days)
 
