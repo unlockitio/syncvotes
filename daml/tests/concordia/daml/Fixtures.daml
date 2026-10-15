@@ -12,7 +12,7 @@ import DA.Time (addRelTime, days)
 import Splice.Api.Token.MetadataV1 hiding (AnyContractId)
 import qualified Splice.Api.Token.MetadataV1 as Meta
 import Cap.Core.Types (AuthenticKey (..))
-import Cap.Governance.ExecutableV1 (Executable, Executable_Execute (..))
+import Cap.Governance.ExecutableV1 (Executable, Executable_Execute (..), Executable_ExecuteResult)
 import SyncVotes.Concordia.Governance
 import SyncVotes.Concordia.Keys (daoKey, targetKey, memberKey)
 import SyncVotes.Concordia.Target (Target (..))
@@ -109,17 +109,22 @@ target : Party -> [Party] -> Script (ContractId Target)
 target owner viewers = submit owner do
   createCmd Target with owner; label = "dao"; info = "original"; viewers = Set.fromList viewers
 
-pins : Party -> ContractId Target -> Map AuthenticKey Meta.AnyContractId
-pins owner cid = Map.singleton (targetKey owner "dao") (coerceContractId cid)
+targetPins : Party -> ContractId Target -> Map AuthenticKey Meta.AnyContractId
+targetPins owner cid = Map.singleton (targetKey owner "dao") (coerceContractId cid)
 
 -- | The DAO itself as the target a vote-gated DAO change acts on.
 daoPins : Fixture -> ContractId DAO -> Map AuthenticKey Meta.AnyContractId
 daoPins f cid = Map.singleton (daoKey f.provider f.owner "round") (coerceContractId cid)
 
+roundProposalTally : SubmitOptions -> ContractId Round -> [ContractId Ballot]
+  -> Map AuthenticKey (ContractId Member) -> Time
+  -> Script ([ContractId Executable], V.Outcome)
 roundProposalTally submitter round ballots weightSources expiresAt = submit submitter do
   exerciseCmd round Proposal_Tally with
     ballots; weightSources; expiresAt; extraArgs = args
 
+executableExecute : SubmitOptions -> ContractId Executable -> [Party]
+  -> Map AuthenticKey Meta.AnyContractId -> Script Executable_ExecuteResult
 executableExecute submitter executable actors targets = submit submitter do
   exerciseCmd executable Executable_Execute with
     actors; targets; extraArgs = args
@@ -131,15 +136,15 @@ exactlyOneExecutable label executions = case executions of
 
 -- | Runs a DAO change end to end: every member votes yes, the operator
 -- resolves after close, and the DAO's own authority executes what passed.
-passDaoChange : V.Effect -> Script (Fixture, ContractId DAO)
-passDaoChange effect = do
+castTallyAndExecuteDaoChange : V.Effect -> Script (Fixture, ContractId DAO)
+castTallyAndExecuteDaoChange effect = do
   f <- open effect plain
   let targets = daoPins f f.dao
-  (r1, b1) <- cast f f.round f.alice V.Yes targets
-  (r2, b2) <- cast f r1 f.bob V.Yes targets
+  (r1, b1) <- roundMemberCast f f.round f.alice V.Yes targets
+  (r2, b2) <- roundMemberCast f r1 f.bob V.Yes targets
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, outcome) <- roundProposalTally f.owner r2 [b1, b2] f.weights
+  (executions, outcome) <- roundProposalTally (actAs f.owner) r2 [b1, b2] f.weights
     (addRelTime now (days 2))
   assert (outcome == V.Passed)
   executable <- exactlyOneExecutable "expected one executable for a passed DAO change" executions
@@ -152,9 +157,9 @@ passDaoChange effect = do
 -- | Casts one vote, returning the round the next voter acts on.
 -- A voter reads the DAO as the app discloses it to them; only their own
 -- membership and vote are theirs to act on.
-cast : Fixture -> ContractId Round -> Party -> V.Vote -> Map AuthenticKey Meta.AnyContractId
-  -> Script (ContractId Round, ContractId Ballot)
-cast f round voter vote targets = submit (actAs voter <> readAs f.provider) do
+roundMemberCast : Fixture -> ContractId Round -> Party -> V.Vote
+  -> Map AuthenticKey Meta.AnyContractId -> Script (ContractId Round, ContractId Ballot)
+roundMemberCast f round voter vote targets = submit (actAs voter <> readAs f.provider) do
   exerciseCmd round Member_Cast with
     voter; vote; previous = None
     weightKey = key; weightSource = own

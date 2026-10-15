@@ -1,0 +1,47 @@
+-- SPDX-License-Identifier: MIT
+-- SyncVotes-facing names for the operation helpers in Fixtures, for a reader
+-- who knows the voting domain rather than the Cap primitives. Each name still
+-- carries the ledger choice the test exercises, so a name never claims a step
+-- the test does not submit. Every binding here is a literal delegation to
+-- Fixtures with an explicit signature: no command, assertion, argument
+-- adaptation or result transformation belongs in this module.
+module SyncVotesVocabulary where
+
+import Prelude hiding (Action)
+import Daml.Script
+import DA.Map (Map)
+
+import qualified Splice.Api.Token.MetadataV1 as Meta
+import Cap.Core.Types (AuthenticKey)
+import Cap.Governance.ExecutableV1 (Executable, Executable_ExecuteResult)
+import SyncVotes.Concordia.Governance (DAO)
+import SyncVotes.Concordia.Member (Member)
+import SyncVotes.Concordia.Round (Round, Ballot)
+import qualified SyncVotes.Concordia.Types as V
+import qualified Fixtures
+
+-- | One member votes, under their own registered share.
+castVoteViaMemberCast : Fixtures.Fixture -> ContractId Round -> Party -> V.Vote
+  -> Map AuthenticKey Meta.AnyContractId -> Script (ContractId Round, ContractId Ballot)
+castVoteViaMemberCast = Fixtures.roundMemberCast
+
+-- | The operator counts the round and reports its outcome.
+tallyProposalViaProposalTally : SubmitOptions -> ContractId Round -> [ContractId Ballot]
+  -> Map AuthenticKey (ContractId Member) -> Time
+  -> Script ([ContractId Executable], V.Outcome)
+tallyProposalViaProposalTally = Fixtures.roundProposalTally
+
+-- | What the round decided is carried out against the pinned targets.
+carryOutDecisionViaExecutableExecute : SubmitOptions -> ContractId Executable -> [Party]
+  -> Map AuthenticKey Meta.AnyContractId -> Script Executable_ExecuteResult
+carryOutDecisionViaExecutableExecute = Fixtures.executableExecute
+
+-- | The one outstanding thing to carry out, or the caller's own diagnostic.
+singleOutcomeToCarryOut : Text -> [ContractId Executable]
+  -> Script (ContractId Executable)
+singleOutcomeToCarryOut = Fixtures.exactlyOneExecutable
+
+-- | A DAO change voted through and then carried out.
+voteThroughDaoChangeAndCarryOut : V.Effect
+  -> Script (Fixtures.Fixture, ContractId DAO)
+voteThroughDaoChangeAndCarryOut = Fixtures.castTallyAndExecuteDaoChange

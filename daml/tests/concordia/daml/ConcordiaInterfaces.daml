@@ -18,7 +18,10 @@ import Cap.Governance.ExecutableV1
   (Executable, Executable_Execute (..), Executable_Cancel (..), Executable_Expire (..))
 import SyncVotes.Concordia.Governance
 import qualified SyncVotes.Concordia.Types as V
-import Fixtures (args, cast, daoPins, executableExecute, exactlyOneExecutable, open, plain, refuses, roundProposalTally)
+import Fixtures (args, daoPins, open, plain, refuses)
+import ConcordiaVocabulary
+  (pinStatesWithViaMemberCast, requireSameKeysViaExecutableExecute,
+   singleExecutionCidFromAuthorization, weighBallotsViaProposalTally)
 
 -- | Resolve through Round's Action_AuthorizeExecution call, then execute via
 -- Executable rather than invoking the DAO application choice from the test.
@@ -26,14 +29,14 @@ resolvedDaoChangeUsesExecutable : Script ()
 resolvedDaoChangeUsesExecutable = script do
   f <- open (V.SetPublic with public = True) plain
   let targets = daoPins f f.dao
-  (round, ballot) <- cast f f.round f.alice V.Yes targets
+  (round, ballot) <- pinStatesWithViaMemberCast f f.round f.alice V.Yes targets
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, outcome) <- roundProposalTally f.owner round [ballot] f.weights
+  (executions, outcome) <- weighBallotsViaProposalTally (actAs f.owner) round [ballot] f.weights
     (addRelTime now (days 2))
   assert (outcome == V.Passed)
-  executable <- exactlyOneExecutable "expected one interface executable after resolution" executions
-  result <- executableExecute (actAs [f.owner, f.provider]) executable [f.owner] targets
+  executable <- singleExecutionCidFromAuthorization "expected one interface executable after resolution" executions
+  result <- requireSameKeysViaExecutableExecute (actAs [f.owner, f.provider]) executable [f.owner] targets
   case result.created of
     [created] -> do
       updated <- queryContractId f.owner (coerceContractId created : ContractId DAO)
@@ -77,13 +80,13 @@ actionAuthorizationAuthorityBoundary = script do
 executableCancelAndExpireBoundary : Script ()
 executableCancelAndExpireBoundary = script do
   f <- open V.Signal plain
-  (round, ballot) <- cast f f.round f.alice V.Yes Map.empty
+  (round, ballot) <- pinStatesWithViaMemberCast f f.round f.alice V.Yes Map.empty
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, outcome) <- roundProposalTally f.owner round [ballot] f.weights
+  (executions, outcome) <- weighBallotsViaProposalTally (actAs f.owner) round [ballot] f.weights
     (addRelTime now (days 2))
   assert (outcome == V.Passed)
-  executable <- exactlyOneExecutable "expected one interface executable after resolution" executions
+  executable <- singleExecutionCidFromAuthorization "expected one interface executable after resolution" executions
   outsider <- allocateParty "window-outsider"
   denied <- trySubmit (actAs outsider <> readAs f.owner) do
     exerciseCmd executable Executable_Execute with

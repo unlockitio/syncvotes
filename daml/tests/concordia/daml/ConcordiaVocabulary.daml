@@ -1,0 +1,51 @@
+-- SPDX-License-Identifier: MIT
+-- Concordia-facing names for the operation helpers in Fixtures, for a reader
+-- who knows the Cap primitives rather than the SyncVotes domain. Each name
+-- carries the ledger choice the test actually exercises, because primitives
+-- such as weighBallots and pinStatesWith run inside those choices and are
+-- never called by a test directly. Every binding here is a literal delegation
+-- to Fixtures with an explicit signature: no command, assertion, argument
+-- adaptation or result transformation belongs in this module.
+module ConcordiaVocabulary where
+
+import Prelude hiding (Action)
+import Daml.Script
+import DA.Map (Map)
+
+import qualified Splice.Api.Token.MetadataV1 as Meta
+import Cap.Core.Types (AuthenticKey)
+import Cap.Governance.ExecutableV1 (Executable, Executable_ExecuteResult)
+import SyncVotes.Concordia.Governance (DAO)
+import SyncVotes.Concordia.Member (Member)
+import SyncVotes.Concordia.Round (Round, Ballot)
+import qualified SyncVotes.Concordia.Types as V
+import qualified Fixtures
+
+-- | Member_Cast pins the presented target state into the ballot it records.
+pinStatesWithViaMemberCast : Fixtures.Fixture -> ContractId Round -> Party -> V.Vote
+  -> Map AuthenticKey Meta.AnyContractId -> Script (ContractId Round, ContractId Ballot)
+pinStatesWithViaMemberCast = Fixtures.roundMemberCast
+
+-- | Proposal_Tally weighs the presented ballots against the opening weights
+-- and authorizes execution through the Action interface.
+weighBallotsViaProposalTally : SubmitOptions -> ContractId Round -> [ContractId Ballot]
+  -> Map AuthenticKey (ContractId Member) -> Time
+  -> Script ([ContractId Executable], V.Outcome)
+weighBallotsViaProposalTally = Fixtures.roundProposalTally
+
+-- | Executable_Execute requires the exact bound target keys it was issued for.
+requireSameKeysViaExecutableExecute : SubmitOptions -> ContractId Executable -> [Party]
+  -> Map AuthenticKey Meta.AnyContractId -> Script Executable_ExecuteResult
+requireSameKeysViaExecutableExecute = Fixtures.executableExecute
+
+-- | The single execution contract id an authorization produced, or the
+-- caller's own diagnostic.
+singleExecutionCidFromAuthorization : Text -> [ContractId Executable]
+  -> Script (ContractId Executable)
+singleExecutionCidFromAuthorization = Fixtures.exactlyOneExecutable
+
+-- | A DAO change driven through Member_Cast, Proposal_Tally and
+-- Executable_Execute.
+daoChangeViaTallyAndExecutableExecute : V.Effect
+  -> Script (Fixtures.Fixture, ContractId DAO)
+daoChangeViaTallyAndExecutableExecute = Fixtures.castTallyAndExecuteDaoChange
