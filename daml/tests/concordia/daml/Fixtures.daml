@@ -12,7 +12,7 @@ import DA.Time (addRelTime, days)
 import Splice.Api.Token.MetadataV1 hiding (AnyContractId)
 import qualified Splice.Api.Token.MetadataV1 as Meta
 import Cap.Core.Types (AuthenticKey (..))
-import Cap.Governance.ExecutableV1 (Executable_Execute (..))
+import Cap.Governance.ExecutableV1 (Executable, Executable_Execute (..))
 import SyncVotes.Concordia.Governance
 import SyncVotes.Concordia.Keys (daoKey, targetKey, memberKey)
 import SyncVotes.Concordia.Target (Target (..))
@@ -116,6 +116,19 @@ pins owner cid = Map.singleton (targetKey owner "dao") (coerceContractId cid)
 daoPins : Fixture -> ContractId DAO -> Map AuthenticKey Meta.AnyContractId
 daoPins f cid = Map.singleton (daoKey f.provider f.owner "round") (coerceContractId cid)
 
+roundProposalTally submitter round ballots weightSources expiresAt = submit submitter do
+  exerciseCmd round Proposal_Tally with
+    ballots; weightSources; expiresAt; extraArgs = args
+
+executableExecute submitter executable actors targets = submit submitter do
+  exerciseCmd executable Executable_Execute with
+    actors; targets; extraArgs = args
+
+exactlyOneExecutable : Text -> [ContractId Executable] -> Script (ContractId Executable)
+exactlyOneExecutable label executions = case executions of
+  [executable] -> pure executable
+  _ -> abort label
+
 -- | Runs a DAO change end to end: every member votes yes, the operator
 -- resolves after close, and the DAO's own authority executes what passed.
 passDaoChange : V.Effect -> Script (Fixture, ContractId DAO)
@@ -126,21 +139,15 @@ passDaoChange effect = do
   (r2, b2) <- cast f r1 f.bob V.Yes targets
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, outcome) <- submit f.owner do
-    exerciseCmd r2 Proposal_Tally with
-      ballots = [b1, b2]; weightSources = f.weights
-      expiresAt = addRelTime now (days 2); extraArgs = args
+  (executions, outcome) <- roundProposalTally f.owner r2 [b1, b2] f.weights
+    (addRelTime now (days 2))
   assert (outcome == V.Passed)
-  case executions of
-    [executable] -> do
-      result <- submit (actAs [f.owner, f.provider]) do
-        exerciseCmd executable Executable_Execute with
-          actors = [f.owner]; targets; extraArgs = args
-      case result.created of
-        [created] -> pure (f, coerceContractId created)
-        [] -> pure (f, f.dao)
-        _ -> abort "expected at most one DAO from a passed change"
-    _ -> abort "expected one executable for a passed DAO change"
+  executable <- exactlyOneExecutable "expected one executable for a passed DAO change" executions
+  result <- executableExecute (actAs [f.owner, f.provider]) executable [f.owner] targets
+  case result.created of
+    [created] -> pure (f, coerceContractId created)
+    [] -> pure (f, f.dao)
+    _ -> abort "expected at most one DAO from a passed change"
 
 -- | Casts one vote, returning the round the next voter acts on.
 -- A voter reads the DAO as the app discloses it to them; only their own

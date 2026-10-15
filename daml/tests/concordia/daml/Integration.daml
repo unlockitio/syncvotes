@@ -19,7 +19,7 @@ import SyncVotes.Concordia.Target (Target (..))
 import SyncVotes.Concordia.Member (Member (..))
 import SyncVotes.Concordia.Round (Round (..), Member_Cast (..), Proposal_Tally (..))
 import qualified SyncVotes.Concordia.Types as V
-import Fixtures (args, cast, daoPins, open, ownWeight, passDaoChange, pins, plain, refuses, target)
+import Fixtures (args, cast, daoPins, executableExecute, exactlyOneExecutable, open, ownWeight, passDaoChange, pins, plain, refuses, roundProposalTally, target)
 
 -- | Weighted yes/no: alice and bob carry 8 of the 10 units between them, so
 -- carol's 2 units against lose, and the signal executes.
@@ -31,18 +31,12 @@ weightedMajorityPasses = script do
   (r3, b3) <- cast f r2 f.carol V.No Map.empty
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, outcome) <- submit f.owner do
-    exerciseCmd r3 Proposal_Tally with
-      ballots = [b1, b2, b3]; weightSources = f.weights
-      expiresAt = addRelTime now (days 2); extraArgs = args
+  (executions, outcome) <- roundProposalTally f.owner r3 [b1, b2, b3] f.weights
+    (addRelTime now (days 2))
   assert (outcome == V.Passed)
-  case executions of
-    [executable] -> do
-      result <- submit f.owner do
-        exerciseCmd executable Executable_Execute with
-          actors = [f.owner]; targets = Map.empty; extraArgs = args
-      assert (result.created == [])
-    _ -> abort "expected one executable for a passed signal"
+  executable <- exactlyOneExecutable "expected one executable for a passed signal" executions
+  result <- executableExecute f.owner executable [f.owner] Map.empty
+  assert (result.created == [])
 
 -- | The same ballots, counted the other way round: one vote of 3 units against
 -- 5 does not carry, so nothing executes and the round reports Failed.
@@ -223,22 +217,16 @@ choiceCarriesTheWinningOption = script do
   (r2, b2) <- cast f r1 f.bob (V.Pick 1) targets
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, outcome) <- submit f.owner do
-    exerciseCmd r2 Proposal_Tally with
-      ballots = [b1, b2]; weightSources = f.weights
-      expiresAt = addRelTime now (days 2); extraArgs = args
+  (executions, outcome) <- roundProposalTally f.owner r2 [b1, b2] f.weights
+    (addRelTime now (days 2))
   assert (outcome == V.Chosen 0)
-  case executions of
-    [executable] -> do
-      result <- submit f.owner do
-        exerciseCmd executable Executable_Execute with
-          actors = [f.owner]; targets; extraArgs = args
-      case result.created of
-        [created] -> do
-          updated <- queryContractId f.owner (coerceContractId created : ContractId Target)
-          assert (fmap (.info) updated == Some "grow")
-        _ -> abort "expected the target to record the chosen option"
-    _ -> abort "expected one executable for a decided choice"
+  executable <- exactlyOneExecutable "expected one executable for a decided choice" executions
+  result <- executableExecute f.owner executable [f.owner] targets
+  case result.created of
+    [created] -> do
+      updated <- queryContractId f.owner (coerceContractId created : ContractId Target)
+      assert (fmap (.info) updated == Some "grow")
+    _ -> abort "expected the target to record the chosen option"
 
 -- | A tie among options decides nothing: alice's 5 for "grow" against carol's
 -- and bob's 5 for "hold" has no lead, so the round fails and nothing executes.
@@ -272,22 +260,16 @@ multiChoiceCarriesEveryWinner = script do
   (r3, b3) <- cast f r2 f.carol (V.PickMany [0]) targets
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, outcome) <- submit f.owner do
-    exerciseCmd r3 Proposal_Tally with
-      ballots = [b1, b2, b3]; weightSources = f.weights
-      expiresAt = addRelTime now (days 2); extraArgs = args
+  (executions, outcome) <- roundProposalTally f.owner r3 [b1, b2, b3] f.weights
+    (addRelTime now (days 2))
   assert (outcome == V.ChosenMany [0])
-  case executions of
-    [executable] -> do
-      result <- submit f.owner do
-        exerciseCmd executable Executable_Execute with
-          actors = [f.owner]; targets; extraArgs = args
-      case result.created of
-        [created] -> do
-          updated <- queryContractId f.owner (coerceContractId created : ContractId Target)
-          assert (fmap (.info) updated == Some "audit")
-        _ -> abort "expected the target to record the chosen options"
-    _ -> abort "expected one executable for a decided multi-choice"
+  executable <- exactlyOneExecutable "expected one executable for a decided multi-choice" executions
+  result <- executableExecute f.owner executable [f.owner] targets
+  case result.created of
+    [created] -> do
+      updated <- queryContractId f.owner (coerceContractId created : ContractId Target)
+      assert (fmap (.info) updated == Some "audit")
+    _ -> abort "expected the target to record the chosen options"
 
 -- | A choice takes an option, not yes or no, and a decision takes yes or no,
 -- not an option. An option the proposal does not offer is refused too.
@@ -645,23 +627,17 @@ secondExecutionRefused = script do
   (r1, b1) <- cast f f.round f.alice V.Yes targets
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, _) <- submit f.owner do
-    exerciseCmd r1 Proposal_Tally with
-      ballots = [b1]; weightSources = f.weights
-      expiresAt = addRelTime now (days 2); extraArgs = args
-  case executions of
-    [executable] -> do
-      result <- submit (actAs [f.owner, f.provider]) do
-        exerciseCmd executable Executable_Execute with
-          actors = [f.owner]; targets; extraArgs = args
-      let updated = case result.created of
-            [created] -> coerceContractId created
-            _ -> error "expected the changed DAO"
-      again <- trySubmit (actAs [f.owner, f.provider]) do
-        exerciseCmd executable Executable_Execute with
-          actors = [f.owner]; targets = daoPins f updated; extraArgs = args
-      refuses "Could not find contract" again
-    _ -> abort "expected one executable for a passed DAO change"
+  (executions, _) <- roundProposalTally f.owner r1 [b1] f.weights
+    (addRelTime now (days 2))
+  executable <- exactlyOneExecutable "expected one executable for a passed DAO change" executions
+  result <- executableExecute (actAs [f.owner, f.provider]) executable [f.owner] targets
+  let updated = case result.created of
+        [created] -> coerceContractId created
+        _ -> error "expected the changed DAO"
+  again <- trySubmit (actAs [f.owner, f.provider]) do
+    exerciseCmd executable Executable_Execute with
+      actors = [f.owner]; targets = daoPins f updated; extraArgs = args
+  refuses "Could not find contract" again
 
 -- | A DAO change acts on the DAO the ballots pinned and no other: another DAO
 -- of the same authority is refused, and so is a DAO that drifted under the vote.
@@ -672,38 +648,34 @@ daoTargetAndDriftGuards = script do
   (r1, b1) <- cast f f.round f.alice V.Yes targets
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, _) <- submit f.owner do
-    exerciseCmd r1 Proposal_Tally with
-      ballots = [b1]; weightSources = f.weights
-      expiresAt = addRelTime now (days 2); extraArgs = args
-  case executions of
-    [executable] -> do
-      -- Another DAO under the same creator and provider: a different key.
-      account <- submit f.provider do
-        createCmd Account with provider = f.provider; user = f.owner
-      other <- submit f.owner do
-        exerciseCmd account Account_CreateDAO with
-          daoId = "other"; name = "Other"; description = ""; image = None
-          equal = False
-          rules = V.Settings with rule = plain; votingDays = 1
-          decisions = V.Settings with rule = plain; votingDays = 1
-          shares = [(f.owner, 1)]
-      wrongDao <- trySubmit (actAs [f.owner, f.provider]) do
-        exerciseCmd executable Executable_Execute with
-          actors = [f.owner]
-          targets = Map.singleton (daoKey f.provider f.owner "round")
-            (coerceContractId other)
-          extraArgs = args
-      refuses "Contract group identifier mismatch" wrongDao
-      -- The DAO moved under the vote: its pinned state no longer holds.
-      let bob = snd (ownWeight f f.bob)
-      moved <- submit (actAs [f.provider, f.owner]) do
-        exerciseCmd f.dao DAO_ChangeShares with changes = [(f.bob, 4)]; current = [bob]
-      drifted <- trySubmit (actAs [f.owner, f.provider]) do
-        exerciseCmd executable Executable_Execute with
-          actors = [f.owner]; targets = daoPins f moved; extraArgs = args
-      refuses "no longer satisfies its bind" drifted
-    _ -> abort "expected one executable for a passed DAO change"
+  (executions, _) <- roundProposalTally f.owner r1 [b1] f.weights
+    (addRelTime now (days 2))
+  executable <- exactlyOneExecutable "expected one executable for a passed DAO change" executions
+  -- Another DAO under the same creator and provider: a different key.
+  account <- submit f.provider do
+    createCmd Account with provider = f.provider; user = f.owner
+  other <- submit f.owner do
+    exerciseCmd account Account_CreateDAO with
+      daoId = "other"; name = "Other"; description = ""; image = None
+      equal = False
+      rules = V.Settings with rule = plain; votingDays = 1
+      decisions = V.Settings with rule = plain; votingDays = 1
+      shares = [(f.owner, 1)]
+  wrongDao <- trySubmit (actAs [f.owner, f.provider]) do
+    exerciseCmd executable Executable_Execute with
+      actors = [f.owner]
+      targets = Map.singleton (daoKey f.provider f.owner "round")
+        (coerceContractId other)
+      extraArgs = args
+  refuses "Contract group identifier mismatch" wrongDao
+  -- The DAO moved under the vote: its pinned state no longer holds.
+  let bob = snd (ownWeight f f.bob)
+  moved <- submit (actAs [f.provider, f.owner]) do
+    exerciseCmd f.dao DAO_ChangeShares with changes = [(f.bob, 4)]; current = [bob]
+  drifted <- trySubmit (actAs [f.owner, f.provider]) do
+    exerciseCmd executable Executable_Execute with
+      actors = [f.owner]; targets = daoPins f moved; extraArgs = args
+  refuses "no longer satisfies its bind" drifted
 
 -- The direct DAO_Apply negative authority boundary is isolated in
 -- SyncVotesBehavior; normal DAO effect journeys above use Executable_Execute.
