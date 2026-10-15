@@ -26,6 +26,44 @@ founderAndShares = script do
       changes = [(f.bob, -1)]; current = [snd (ownWeight f f.bob)]
   refuses "valid share changes" invalid
 
+-- | PRIVILEGED PATH: the user founds a DAO including a separate founder without
+-- that founder acting. This privileged path is intentionally retained; these
+-- tests assert there is NO universal consent requirement in this package.
+foundingWithoutFounderConsent : Script ()
+foundingWithoutFounderConsent = script do
+  provider <- allocateParty "founding-provider"
+  user <- allocateParty "founding-user"
+  founder <- allocateParty "founding-founder"
+  account <- submit provider do
+    createCmd Account with provider; user
+  dao <- submit user do
+    exerciseCmd account Account_CreateDAO with
+      daoId = "founding"; name = "Founded"; description = ""; image = None
+      equal = False
+      rules = V.Settings with rule = plain; votingDays = 1
+      decisions = V.Settings with rule = plain; votingDays = 1
+      shares = [(user, 1), (founder, 2)]
+  found <- queryContractId user dao
+  assert (fmap (.members) found == Some 2 && fmap (.units) found == Some 3)
+  members <- query @Member user
+  assert (any (\(_, m) -> m.party == founder && m.share == 2) members)
+
+-- | PRIVILEGED PATH: joint DAO authorities add a member without the invitee
+-- or other members acting or voting. This privileged path is intentionally
+-- retained; these tests assert there is NO universal consent requirement in
+-- this package.
+addMemberWithoutMemberApproval : Script ()
+addMemberWithoutMemberApproval = script do
+  f <- open V.Signal plain
+  invitee <- allocateParty "administrative-invitee"
+  changed <- submit (actAs [f.provider, f.owner]) do
+    exerciseCmd f.dao DAO_ChangeShares with
+      changes = [(invitee, 1)]; current = []
+  updated <- queryContractId f.owner changed
+  assert (fmap (.members) updated == Some 4 && fmap (.units) updated == Some 11)
+  members <- query @Member f.owner
+  assert (any (\(_, m) -> m.party == invitee && m.share == 1) members)
+
 -- | Direct joint-authority administrative reshare archives the previous
 -- membership, updates units and shareSince, then permits removing that member.
 reshareAndRemove : Script ()
