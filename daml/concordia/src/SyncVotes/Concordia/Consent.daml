@@ -3,9 +3,10 @@
 -- remains intentionally reachable without consent.
 module SyncVotes.Concordia.Consent where
 
-import Splice.Util (require)
-import SyncVotes.Concordia.Governance (Account (..), Account_CreateDAO (..), DAO)
-import SyncVotes.Concordia.Member ()
+import Splice.Util (fetchChecked, require)
+import SyncVotes.Concordia.Governance (Account (..), Account_CreateDAO (..), DAO (..), DAO_ChangeShares (..))
+import SyncVotes.Concordia.Keys (memberKey)
+import SyncVotes.Concordia.Member (Member (..))
 import qualified SyncVotes.Concordia.Types as V
 
 -- The proposal is immutable: a changed term set requires a new contract and
@@ -86,3 +87,112 @@ template FoundingConsent
   where
     signatory founder
     observer provider, creator
+
+-- The member approves directly at this choice, with live checked membership;
+-- there is no tally. The request alone cannot admit an invitee.
+template MembershipInvitation
+  with
+    provider : Party
+    creator : Party
+    daoId : Text
+    dao : ContractId DAO
+    approver : Party
+    approverMember : ContractId Member
+    invitee : Party
+    share : Int
+    expiresAt : Time
+  where
+    signatory provider, creator
+    observer approver, invitee
+    ensure share > 0 && invitee /= approver
+
+    choice MembershipInvitation_Approve : ContractId ApprovedMembershipInvitation
+      controller approver
+      do
+        now <- getTime
+        require "membership invitation is open" (now < expiresAt)
+        member <- fetchChecked (memberKey provider creator daoId approver) approverMember
+        require "approver is a live member of this DAO"
+          (member.provider == provider && member.creator == creator
+            && member.daoId == daoId && member.party == approver
+            && member.since <= now)
+        target <- fetch dao
+        require "invitation targets this DAO"
+          (target.provider == provider && target.creator == creator
+            && target.daoId == daoId)
+        create ApprovedMembershipInvitation with
+          provider; creator; daoId; dao; approver; approverMember; invitee
+          share; expiresAt; approvedAt = now
+
+    choice MembershipInvitation_Withdraw : ()
+      controller approver
+      do pure ()
+
+    choice MembershipInvitation_Expire : ()
+      controller provider, creator
+      do
+        now <- getTime
+        require "membership invitation has expired" (now >= expiresAt)
+
+-- One existing member has approved; the invitee must still accept before
+-- admission. DAO_ChangeShares remains a reachable privileged alternative.
+template ApprovedMembershipInvitation
+  with
+    provider : Party
+    creator : Party
+    daoId : Text
+    dao : ContractId DAO
+    approver : Party
+    approverMember : ContractId Member
+    invitee : Party
+    share : Int
+    expiresAt : Time
+    approvedAt : Time
+  where
+    signatory approver, provider, creator
+    observer invitee
+
+    choice ApprovedMembershipInvitation_Accept : ContractId MembershipAttestation
+      controller invitee
+      do
+        now <- getTime
+        require "membership invitation is open" (now < expiresAt)
+        member <- fetchChecked (memberKey provider creator daoId approver) approverMember
+        require "approver is a live member of this DAO"
+          (member.provider == provider && member.creator == creator
+            && member.daoId == daoId && member.party == approver
+            && member.since <= now)
+        -- Reuse the privileged administrative choice under gathered consent;
+        -- this standard path does not close off direct DAO_ChangeShares.
+        updated <- exercise dao DAO_ChangeShares with
+          changes = [(invitee, share)]; current = []
+        create MembershipAttestation with
+          provider; creator; daoId; dao = updated; approver; invitee; share
+          approvedAt; acceptedAt = now
+
+    choice ApprovedMembershipInvitation_Withdraw : ()
+      controller approver
+      do pure ()
+
+    choice ApprovedMembershipInvitation_Expire : ()
+      controller provider, creator
+      do
+        now <- getTime
+        require "membership invitation has expired" (now >= expiresAt)
+
+-- Persistent provenance after the member is created, distinct from the
+-- privileged administrative path that can still add a member directly.
+template MembershipAttestation
+  with
+    provider : Party
+    creator : Party
+    daoId : Text
+    dao : ContractId DAO
+    approver : Party
+    invitee : Party
+    share : Int
+    approvedAt : Time
+    acceptedAt : Time
+  where
+    signatory provider, creator
+    observer approver, invitee

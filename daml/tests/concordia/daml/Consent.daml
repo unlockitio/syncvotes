@@ -69,8 +69,13 @@ unanimousFoundingMatchesPrivilegedState = script do
   assert (fmap (\d -> (d.public, d.dissolving)) standard
     == fmap (\d -> (d.public, d.dissolving)) alternate)
   members <- query @Member f.creator
-  assert ([(m.party, m.share) | (_, m) <- members, m.daoId == "founding"]
-    == [(m.party, m.share) | (_, m) <- members, m.daoId == "privileged"])
+  assert (length [(cid, m) | (cid, m) <- members, m.daoId == "founding"] == 2
+    && length [(cid, m) | (cid, m) <- members, m.daoId == "privileged"] == 2)
+  assert (all (\party ->
+    [(m.share, m.since, m.shareSince) | (_, m) <- members,
+      m.daoId == "founding" && m.party == party]
+    == [(m.share, m.since, m.shareSince) | (_, m) <- members,
+      m.daoId == "privileged" && m.party == party]) [f.creator, f.other])
 
 -- | STANDARD PATH: a founder withholding consent prevents pre-DAO founding;
 -- this is not a vote, and the privileged path remains available.
@@ -129,3 +134,146 @@ privilegedFoundingStillNeedsNoConsent = script do
       shares = [(f.creator, 1), (f.other, 2)]
   found <- queryContractId f.creator dao
   assert (fmap (.members) found == Some 2 && fmap (.units) found == Some 3)
+
+invitation : Founding -> ContractId DAO -> ContractId Member -> Party -> Party -> Time
+  -> MembershipInvitation
+invitation f dao approverMember approver invitee expiresAt = MembershipInvitation with
+  provider = f.provider; creator = f.creator; daoId = "founding"; dao
+  approver; approverMember; invitee; share = 4; expiresAt
+
+admission : () -> Script (Founding, ContractId DAO, ContractId Member, Party)
+admission () = do
+  f <- start ()
+  dao <- submit f.creator do
+    exerciseCmd f.account Account_CreateDAO with
+      daoId = "founding"; name = "DAO"; description = ""; image = None
+      equal = False
+      rules = V.Settings with rule = plain; votingDays = 1
+      decisions = V.Settings with rule = plain; votingDays = 1
+      shares = [(f.creator, 1), (f.other, 2)]
+  members <- query @Member f.creator
+  approverMember <- case [cid | (cid, m) <- members, m.party == f.other] of
+    [cid] -> pure cid
+    _ -> abort "expected existing member"
+  invitee <- allocateParty "admission-invitee"
+  pure (f, dao, approverMember, invitee)
+
+-- | STANDARD PATH: a live member approves directly and the invitee accepts;
+-- membership accounting and persistent timestamps follow, without any tally.
+memberApprovalAndInviteeAcceptance : Script ()
+memberApprovalAndInviteeAcceptance = script do
+  (f, dao, member, invitee) <- admission ()
+  now <- getTime
+  pending <- submit (actAs [f.provider, f.creator]) do
+    createCmd (invitation f dao member f.other invitee f.expiresAt)
+  approved <- submit (actAs f.other <> readAs f.creator) do
+    exerciseCmd pending MembershipInvitation_Approve
+  attestation <- submit (actAs invitee <> readAs f.creator) do
+    exerciseCmd approved ApprovedMembershipInvitation_Accept
+  record <- queryContractId f.creator attestation
+  assert (fmap (\a -> (a.approver, a.invitee, a.share)) record
+    == Some (f.other, invitee, 4))
+  assert (fmap (\a -> a.approvedAt >= now && a.acceptedAt >= a.approvedAt
+    && a.acceptedAt < f.expiresAt) record == Some True)
+  active <- query @Member f.creator
+  assert (any (\(_, m) -> m.party == invitee && m.share == 4) active)
+  assert (fmap (\a -> a.daoId == "founding" && a.provider == f.provider
+    && a.creator == f.creator) record == Some True)
+  old <- queryContractId f.creator dao
+  assert (old == None)
+  updated <- case record of
+    Some a -> queryContractId f.creator a.dao
+    None -> abort "expected admission provenance"
+  assert (fmap (.members) updated == Some 3 && fmap (.units) updated == Some 7)
+
+-- | STANDARD PATH: member approval alone leaves the invitee outside the DAO;
+-- direct privileged administration remains possible, not universally gated.
+noInviteeAcceptance : Script ()
+noInviteeAcceptance = script do
+  (f, dao, member, invitee) <- admission ()
+  pending <- submit (actAs [f.provider, f.creator]) do
+    createCmd (invitation f dao member f.other invitee f.expiresAt)
+  approved <- submit (actAs f.other <> readAs f.creator) do
+    exerciseCmd pending MembershipInvitation_Approve
+  unaccepted <- trySubmit f.other do
+    exerciseCmd approved ApprovedMembershipInvitation_Accept
+  refuses "requires authorizers" unaccepted
+  still <- queryContractId f.creator dao
+  assert (fmap (.members) still == Some 2 && fmap (.units) still == Some 3)
+  active <- query @Member f.creator
+  assert (not (any (\(_, m) -> m.party == invitee) active))
+
+-- | STANDARD PATH: a pending invitation has no member approval and cannot
+-- be accepted as if one existed; this is direct consent, not a tally.
+noMemberApproval : Script ()
+noMemberApproval = script do
+  (f, dao, member, invitee) <- admission ()
+  pending <- submit (actAs [f.provider, f.creator]) do
+    createCmd (invitation f dao member f.other invitee f.expiresAt)
+  unapproved <- trySubmit invitee do
+    exerciseCmd pending MembershipInvitation_Approve
+  refuses "requires authorizers" unapproved
+
+-- | STANDARD PATH: a non-member cannot approve an invitation, even when
+-- named as its proposed approver; the check uses current DAO membership.
+nonMemberApproverRefused : Script ()
+nonMemberApproverRefused = script do
+  (f, dao, member, invitee) <- admission ()
+  outsider <- allocateParty "admission-outsider"
+  pending <- submit (actAs [f.provider, f.creator]) do
+    createCmd (invitation f dao member outsider invitee f.expiresAt)
+  rejected <- trySubmit (actAs outsider <> readAs f.creator) do
+    exerciseCmd pending MembershipInvitation_Approve
+  refuses "Contract group identifier mismatch" rejected
+
+-- | STANDARD PATH: a previously approved invitation cannot be accepted
+-- at expiry; the proposer or DAO authorities can close the expired offer.
+expiredInvitationRefused : Script ()
+expiredInvitationRefused = script do
+  (f, dao, member, invitee) <- admission ()
+  pending <- submit (actAs [f.provider, f.creator]) do
+    createCmd (invitation f dao member f.other invitee f.expiresAt)
+  approved <- submit (actAs f.other <> readAs f.creator) do
+    exerciseCmd pending MembershipInvitation_Approve
+  setTime f.expiresAt
+  expired <- trySubmit invitee do
+    exerciseCmd approved ApprovedMembershipInvitation_Accept
+  refuses "membership invitation is open" expired
+  _ <- submit (actAs [f.provider, f.creator]) do
+    exerciseCmd approved ApprovedMembershipInvitation_Expire
+  pure ()
+
+-- | STANDARD PATH: a checked member from a different DAO cannot approve
+-- admission here; one live member of this DAO must approve directly.
+wrongDaoMemberRefused : Script ()
+wrongDaoMemberRefused = script do
+  (f, dao, _, invitee) <- admission ()
+  _ <- submit f.creator do
+    exerciseCmd f.account Account_CreateDAO with
+      daoId = "other"; name = "Other"; description = ""; image = None
+      equal = False
+      rules = V.Settings with rule = plain; votingDays = 1
+      decisions = V.Settings with rule = plain; votingDays = 1
+      shares = [(f.creator, 1), (f.other, 2)]
+  otherMembers <- query @Member f.creator
+  foreign <- case [cid | (cid, m) <- otherMembers, m.party == f.other && m.daoId == "other"] of
+    [cid] -> pure cid
+    _ -> abort "expected other DAO member"
+  pending <- submit (actAs [f.provider, f.creator]) do
+    createCmd (invitation f dao foreign f.other invitee f.expiresAt)
+  rejected <- trySubmit (actAs f.other <> readAs f.creator) do
+    exerciseCmd pending MembershipInvitation_Approve
+  refuses "Contract group identifier mismatch" rejected
+
+-- | PRIVILEGED PATH: direct joint-authority DAO_ChangeShares still adds a
+-- member without gathered consent; this alternative is intentionally retained.
+privilegedAdmissionStillNeedsNoConsent : Script ()
+privilegedAdmissionStillNeedsNoConsent = script do
+  (f, dao, _, invitee) <- admission ()
+  updated <- submit (actAs [f.provider, f.creator]) do
+    exerciseCmd dao DAO_ChangeShares with
+      changes = [(invitee, 4)]; current = []
+  found <- queryContractId f.creator updated
+  assert (fmap (.members) found == Some 3 && fmap (.units) found == Some 7)
+  active <- query @Member f.creator
+  assert (any (\(_, m) -> m.party == invitee && m.share == 4) active)
