@@ -1,0 +1,131 @@
+-- SPDX-License-Identifier: MIT
+-- Standard pre-DAO founder consent is separate from the intentionally retained
+-- privileged Account_CreateDAO entry path; neither is a vote.
+module Consent where
+
+import Daml.Script
+import DA.Time (addRelTime, days)
+import SyncVotes.Concordia.Consent
+import SyncVotes.Concordia.Governance
+import SyncVotes.Concordia.Member (Member (..))
+import qualified SyncVotes.Concordia.Types as V
+import Integration (plain, refuses)
+
+data Founding = Founding with
+  provider : Party
+  creator : Party
+  other : Party
+  account : ContractId Account
+  proposal : ContractId FoundingProposal
+  expiresAt : Time
+
+terms : Party -> Party -> [(Party, Int)] -> Time -> FoundingProposal
+terms provider creator shares expiresAt = FoundingProposal with
+  provider; creator; daoId = "founding"; name = "DAO"
+  description = ""; image = None; equal = False
+  rules = V.Settings with rule = plain; votingDays = 1
+  decisions = V.Settings with rule = plain; votingDays = 1
+  shares; expiresAt
+
+start : () -> Script Founding
+start () = do
+  provider <- allocateParty "consent-provider"
+  creator <- allocateParty "consent-creator"
+  other <- allocateParty "consent-other"
+  account <- submit provider do createCmd Account with provider; user = creator
+  now <- getTime
+  let expiresAt = addRelTime now (days 1)
+  proposal <- submit (actAs [provider, creator]) do
+    createCmd (terms provider creator [(creator, 1), (other, 2)] expiresAt)
+  pure Founding with provider; creator; other; account; proposal; expiresAt
+
+-- | STANDARD PATH: every founder accepts fixed terms before DAO founding;
+-- this is pre-DAO consent, not a vote, and the privileged path remains.
+unanimousFoundingMatchesPrivilegedState : Script ()
+unanimousFoundingMatchesPrivilegedState = script do
+  f <- start ()
+  first <- submit f.creator do
+    exerciseCmd f.proposal FoundingProposal_Accept with founder = f.creator
+  second <- submit f.other do
+    exerciseCmd f.proposal FoundingProposal_Accept with founder = f.other
+  recorded <- queryContractId f.creator second
+  assert (fmap (.founder) recorded == Some f.other)
+  dao <- submit (actAs [f.provider, f.creator]) do
+    exerciseCmd f.proposal FoundingProposal_Finalize with
+      account = f.account; consents = [first, second]
+  standard <- queryContractId f.creator dao
+  privileged <- submit f.creator do
+    exerciseCmd f.account Account_CreateDAO with
+      daoId = "privileged"; name = "DAO"; description = ""; image = None
+      equal = False
+      rules = V.Settings with rule = plain; votingDays = 1
+      decisions = V.Settings with rule = plain; votingDays = 1
+      shares = [(f.creator, 1), (f.other, 2)]
+  alternate <- queryContractId f.creator privileged
+  assert (fmap (\d -> (d.name, d.description, d.image, d.equal)) standard
+    == fmap (\d -> (d.name, d.description, d.image, d.equal)) alternate)
+  assert (fmap (\d -> (d.rules, d.decisions, d.members, d.units)) standard
+    == fmap (\d -> (d.rules, d.decisions, d.members, d.units)) alternate)
+  assert (fmap (\d -> (d.public, d.dissolving)) standard
+    == fmap (\d -> (d.public, d.dissolving)) alternate)
+  members <- query @Member f.creator
+  assert ([(m.party, m.share) | (_, m) <- members, m.daoId == "founding"]
+    == [(m.party, m.share) | (_, m) <- members, m.daoId == "privileged"])
+
+-- | STANDARD PATH: a founder withholding consent prevents pre-DAO founding;
+-- this is not a vote, and the privileged path remains available.
+withheldFounderRefusesFinalization : Script ()
+withheldFounderRefusesFinalization = script do
+  f <- start ()
+  first <- submit f.creator do
+    exerciseCmd f.proposal FoundingProposal_Accept with founder = f.creator
+  refused <- trySubmit (actAs [f.provider, f.creator]) do
+    exerciseCmd f.proposal FoundingProposal_Finalize with
+      account = f.account; consents = [first]
+  refuses "every founder consent is supplied exactly once" refused
+
+-- | STANDARD PATH: acceptance at expiry is refused before DAO creation;
+-- this pre-DAO consent window is not a voting deadline.
+expiredAcceptanceRefused : Script ()
+expiredAcceptanceRefused = script do
+  f <- start ()
+  setTime f.expiresAt
+  expired <- trySubmit f.other do
+    exerciseCmd f.proposal FoundingProposal_Accept with founder = f.other
+  refuses "founding acceptance is open" expired
+  _ <- submit (actAs [f.provider, f.creator]) do
+    exerciseCmd f.proposal FoundingProposal_Expire
+  pure ()
+
+-- | STANDARD PATH: consent bound to one immutable proposal cannot authorize
+-- altered founding terms; this pre-DAO consent is not a vote.
+changedTermsNeedFreshConsent : Script ()
+changedTermsNeedFreshConsent = script do
+  f <- start ()
+  original <- submit f.creator do
+    exerciseCmd f.proposal FoundingProposal_Accept with founder = f.creator
+  changed <- submit (actAs [f.provider, f.creator]) do
+    createCmd ((terms f.provider f.creator [(f.creator, 1), (f.other, 3)] f.expiresAt)
+      with name = "Changed")
+  other <- submit f.other do
+    exerciseCmd changed FoundingProposal_Accept with founder = f.other
+  refused <- trySubmit (actAs [f.provider, f.creator]) do
+    exerciseCmd changed FoundingProposal_Finalize with
+      account = f.account; consents = [original, other]
+  refuses "every founder accepted these fixed terms" refused
+
+-- | PRIVILEGED PATH: Account_CreateDAO still founds without consent; this
+-- intentionally retained alternative means there is NO universal consent
+-- requirement in this package, and no founding vote is implied.
+privilegedFoundingStillNeedsNoConsent : Script ()
+privilegedFoundingStillNeedsNoConsent = script do
+  f <- start ()
+  dao <- submit f.creator do
+    exerciseCmd f.account Account_CreateDAO with
+      daoId = "privileged"; name = "DAO"; description = ""; image = None
+      equal = False
+      rules = V.Settings with rule = plain; votingDays = 1
+      decisions = V.Settings with rule = plain; votingDays = 1
+      shares = [(f.creator, 1), (f.other, 2)]
+  found <- queryContractId f.creator dao
+  assert (fmap (.members) found == Some 2 && fmap (.units) found == Some 3)

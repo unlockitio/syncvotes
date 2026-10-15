@@ -1,0 +1,88 @@
+-- SPDX-License-Identifier: MIT
+-- Standard pre-DAO founder consent, not a vote. Privileged Account_CreateDAO
+-- remains intentionally reachable without consent.
+module SyncVotes.Concordia.Consent where
+
+import Splice.Util (require)
+import SyncVotes.Concordia.Governance (Account (..), Account_CreateDAO (..), DAO)
+import SyncVotes.Concordia.Member ()
+import qualified SyncVotes.Concordia.Types as V
+
+-- The proposal is immutable: a changed term set requires a new contract and
+-- cannot reuse acceptances tied to the old contract.
+template FoundingProposal
+  with
+    provider : Party
+    creator : Party
+    daoId : Text
+    name : Text
+    description : Text
+    image : Optional Text
+    equal : Bool
+    rules : V.Settings
+    decisions : V.Settings
+    shares : [(Party, Int)]
+    expiresAt : Time
+  where
+    signatory provider, creator
+    observer map fst shares
+    ensure V.validInfo name description image
+      && V.validSettings rules && V.validSettings decisions
+      && V.validChanges equal shares && length shares <= V.batch
+      && all (\(_, units) -> units > 0) shares
+      && creator `elem` map fst shares
+
+    nonconsuming choice FoundingProposal_Accept : ContractId FoundingConsent
+      with founder : Party
+      controller founder
+      do
+        now <- getTime
+        require "founding acceptance is open" (now < expiresAt)
+        require "founder is in the proposed shares" (founder `elem` map fst shares)
+        create FoundingConsent with
+          proposal = self; provider; creator; founder; acceptedAt = now
+
+    choice FoundingProposal_Withdraw : ()
+      controller creator
+      do pure ()
+
+    choice FoundingProposal_Expire : ()
+      controller provider, creator
+      do
+        now <- getTime
+        require "founding proposal has expired" (now >= expiresAt)
+
+    choice FoundingProposal_Finalize : ContractId DAO
+      with
+        account : ContractId Account
+        consents : [ContractId FoundingConsent]
+      controller provider, creator
+      do
+        now <- getTime
+        require "founding proposal is open" (now < expiresAt)
+        require "every founder consent is supplied exactly once"
+          (length consents == length shares)
+        accepted <- forA consents fetch
+        require "every founder accepted these fixed terms"
+          (all (\c -> c.proposal == self && c.provider == provider
+            && c.creator == creator && c.acceptedAt < expiresAt) accepted
+            && all (\party -> length (filter (\c -> c.founder == party) accepted) == 1)
+              (map fst shares))
+        accountTerms <- fetch account
+        require "account belongs to the founding authorities"
+          (accountTerms.provider == provider && accountTerms.user == creator)
+        exercise account Account_CreateDAO with
+          daoId; name; description; image; equal; rules; decisions; shares
+
+-- Each founder signs a queryable, timestamped acceptance of one immutable
+-- proposal; this standard path is pre-DAO consent, not a voting round.
+template FoundingConsent
+  with
+    proposal : ContractId FoundingProposal
+    provider : Party
+    creator : Party
+    founder : Party
+    acceptedAt : Time
+  where
+    signatory founder
+    observer provider, creator
