@@ -19,7 +19,7 @@ import Cap.Governance.ExecutableV1
 import SyncVotes.Concordia.Governance
 import SyncVotes.Concordia.Round (Proposal_Tally (..))
 import qualified SyncVotes.Concordia.Types as V
-import Integration (args, cast, daoPins, open, plain, refuses)
+import Fixtures (args, cast, daoPins, open, plain, refuses)
 
 -- | Resolve through Round's Action_AuthorizeExecution call, then execute via
 -- Executable rather than invoking the DAO application choice from the test.

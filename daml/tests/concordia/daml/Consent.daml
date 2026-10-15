@@ -9,7 +9,7 @@ import SyncVotes.Concordia.Consent
 import SyncVotes.Concordia.Governance
 import SyncVotes.Concordia.Member (Member (..))
 import qualified SyncVotes.Concordia.Types as V
-import Integration (plain, refuses)
+import Fixtures (plain, refuses)
 
 data Founding = Founding with
   provider : Party

@@ -9,7 +9,7 @@ import Daml.Script
 import SyncVotes.Concordia.Governance
 import SyncVotes.Concordia.Member (Member (..))
 import qualified SyncVotes.Concordia.Types as V
-import Integration (open, ownWeight, plain, refuses)
+import Fixtures (open, ownWeight, plain, refuses)
 import DA.Time (addRelTime, days)
 
 -- | Founding creates all three memberships and the same total in the DAO;

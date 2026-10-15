@@ -8,157 +8,18 @@ module Integration where
 
 import Prelude hiding (Action)
 import Daml.Script
-import qualified DA.Text as Text
-import DA.Map (Map)
 import qualified DA.Map as Map
 import qualified DA.Set as Set
 import DA.Time (addRelTime, days, seconds)
 
-import Splice.Api.Token.MetadataV1 hiding (AnyContractId)
-import qualified Splice.Api.Token.MetadataV1 as Meta
-import Cap.Core.Types (AuthenticKey (..))
 import Cap.Governance.ExecutableV1 (Executable_Execute (..))
 import SyncVotes.Concordia.Governance
-import SyncVotes.Concordia.Keys (daoKey, targetKey, memberKey)
+import SyncVotes.Concordia.Keys (daoKey, memberKey)
 import SyncVotes.Concordia.Target (Target (..))
 import SyncVotes.Concordia.Member (Member (..))
-import SyncVotes.Concordia.Round (Round (..), Member_Cast (..), Proposal_Tally (..), Ballot (..))
+import SyncVotes.Concordia.Round (Round (..), Member_Cast (..), Proposal_Tally (..))
 import qualified SyncVotes.Concordia.Types as V
-
--- | The ledger refused the operation, for the reason the script expected. A
--- refusal for another reason reports both, so a changed message is readable.
-refuses : Text -> Either SubmitError a -> Script ()
-refuses reason result = case result of
-  Right _ -> abort ("accepted invalid operation: " <> reason)
-  Left err
-    | reason `Text.isInfixOf` show err -> pure ()
-    | otherwise -> abort ("expected a refusal for " <> reason <> ", got: " <> show err)
-
-args : ExtraArgs
-args = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
-
--- | A plain decision: no quorum, simple majority of the votes cast, counted
--- once voting closes.
-plain : V.Rule
-plain = V.Rule with
-  basis = V.OfCast
-  threshold = V.Majority
-  quorum = 0
-  early = False
-  changeable = False
-  secret = False
-
--- | A DAO of three members with unequal shares: 5, 3 and 2 units of ten.
-data Fixture = Fixture
-  with
-    owner : Party
-    provider : Party
-    dao : ContractId DAO
-    alice : Party
-    bob : Party
-    carol : Party
-    weights : Map AuthenticKey (ContractId Member)
-    -- Who each registered weight belongs to, so a script can hand a voter
-    -- their own weight contract as the voter would.
-    holders : [(Party, AuthenticKey)]
-    action : ContractId Proposal
-    round : ContractId Round
-    closesAt : Time
-
--- | Founds a DAO, then opens a round over the given effect and rule, with
--- membership contracts for every voter in the opening electorate.
-open : V.Effect -> V.Rule -> Script Fixture
-open effect rule = do
-  alice <- allocateParty "alice"
-  let owner = alice
-  provider <- allocateParty "provider"
-  bob <- allocateParty "bob"
-  carol <- allocateParty "carol"
-  let voters = Set.fromList [alice, bob, carol]
-  account <- submit provider do createCmd Account with provider; user = owner
-  dao <- submit owner do
-    exerciseCmd account Account_CreateDAO with
-      daoId = "round"; name = "DAO"; description = ""; image = None; equal = False
-      rules = V.Settings with rule; votingDays = 1
-      decisions = V.Settings with rule; votingDays = 1
-      shares = [(alice, 5), (bob, 3), (carol, 2)]
-  registered <- query @Member owner
-  let weights = [(memberKey provider owner "round" m.party, cid) | (cid, m) <- registered]
-      holders = [(m.party, memberKey provider owner "round" m.party) | (_, m) <- registered]
-  action <- submit (actAs [owner, provider]) do
-    createCmd Proposal with
-      owner; provider
-      -- A DAO change names the DAO; anything else names its Target.
-      targetLabel = if V.changesDao effect then "round" else "dao"
-      effect; viewers = voters
-  round <- submit owner do
-    exerciseCmd dao DAO_Open with
-      id = "round"; operator = owner; actionCid = toInterfaceContractId action
-      effect; rule; votingDays = 1; sources = Map.fromList weights
-  opened <- queryContractId owner round
-  let closesAt = case opened of Some r -> r.closesAt; None -> error "round missing"
-  pure Fixture with
-    owner; provider; dao; alice; bob; carol
-    weights = Map.fromList weights; holders; action; round; closesAt
-
--- | The voter's own registered membership: the key and contract they can see.
-ownWeight : Fixture -> Party -> (AuthenticKey, ContractId Member)
-ownWeight f voter = case lookup voter f.holders of
-  Some key -> case Map.lookup key f.weights of
-    Some cid -> (key, cid)
-    None -> error "the fixture lost a weight contract"
-  None -> error "the fixture holds no weight for this voter"
-
--- | The DAO's own target contract, which an executed effect writes to.
-target : Party -> [Party] -> Script (ContractId Target)
-target owner viewers = submit owner do
-  createCmd Target with owner; label = "dao"; info = "original"; viewers = Set.fromList viewers
-
-pins : Party -> ContractId Target -> Map AuthenticKey Meta.AnyContractId
-pins owner cid = Map.singleton (targetKey owner "dao") (coerceContractId cid)
-
--- | The DAO itself as the target a vote-gated DAO change acts on.
-daoPins : Fixture -> ContractId DAO -> Map AuthenticKey Meta.AnyContractId
-daoPins f cid = Map.singleton (daoKey f.provider f.owner "round") (coerceContractId cid)
-
--- | Runs a DAO change end to end: every member votes yes, the operator
--- resolves after close, and the DAO's own authority executes what passed.
-passDaoChange : V.Effect -> Script (Fixture, ContractId DAO)
-passDaoChange effect = do
-  f <- open effect plain
-  let targets = daoPins f f.dao
-  (r1, b1) <- cast f f.round f.alice V.Yes targets
-  (r2, b2) <- cast f r1 f.bob V.Yes targets
-  now <- getTime
-  setTime (addRelTime now (days 1))
-  (executions, outcome) <- submit f.owner do
-    exerciseCmd r2 Proposal_Tally with
-      ballots = [b1, b2]; weightSources = f.weights
-      expiresAt = addRelTime now (days 2); extraArgs = args
-  assert (outcome == V.Passed)
-  case executions of
-    [executable] -> do
-      result <- submit (actAs [f.owner, f.provider]) do
-        exerciseCmd executable Executable_Execute with
-          actors = [f.owner]; targets; extraArgs = args
-      case result.created of
-        [created] -> pure (f, coerceContractId created)
-        [] -> pure (f, f.dao)
-        _ -> abort "expected at most one DAO from a passed change"
-    _ -> abort "expected one executable for a passed DAO change"
-
--- | Casts one vote, returning the round the next voter acts on.
--- A voter reads the DAO as the app discloses it to them; only their own
--- membership and vote are theirs to act on.
-cast : Fixture -> ContractId Round -> Party -> V.Vote -> Map AuthenticKey Meta.AnyContractId
-  -> Script (ContractId Round, ContractId Ballot)
-cast f round voter vote targets = submit (actAs voter <> readAs f.provider) do
-  exerciseCmd round Member_Cast with
-    voter; vote; previous = None
-    weightKey = key; weightSource = own
-    targets
-  where
-    (key, own) = ownWeight f voter
+import Fixtures (args, cast, daoPins, open, ownWeight, passDaoChange, pins, plain, refuses, target)
 
 -- | Weighted yes/no: alice and bob carry 8 of the 10 units between them, so
 -- carol's 2 units against lose, and the signal executes.
