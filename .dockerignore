@@ -3,6 +3,7 @@ daml.js
 build
 .svelte-kit
 daml/.daml
+daml/syncvotes/.daml
 .git
 *.env
 .env

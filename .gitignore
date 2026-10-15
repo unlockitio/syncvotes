@@ -26,6 +26,7 @@ vite.config.ts.timestamp-*
 
 # Daml
 daml/.daml
+daml/syncvotes/.daml
 daml/tests/syncvotes/.daml
 daml/concordia/.daml
 daml/tests/concordia/.daml

@@ -12,7 +12,7 @@ the docs at [syncvotes.com/docs](https://syncvotes.com/docs).
   app's validator. The key comes from a 12-word phrase and never leaves the browser. The server
   prepares each transaction; the browser decodes it, checks it is what the page asked for, and
   signs.
-- **The model.** A Daml package, `syncvotes`, in `daml/src/SyncVotes/`. The app's own party, the
+- **The model.** A Daml package, `syncvotes`, in `daml/syncvotes/src/SyncVotes/`. The app's own party, the
   provider, co-signs every contract, counts the ballots and carries out what passed. The ledger
   checks every ballot and every change it is handed.
 - **Money.** Everything costs network traffic. Users and DAOs pay in by sending Canton Coin to the
@@ -148,8 +148,8 @@ account console are not served publicly: reach them over an SSH tunnel to `keycl
 The Daml package keeps its name, `syncvotes`, for good: renaming it would hide every existing DAO.
 Each release is a Smart Contract Upgrade of the one before, checked by the compiler:
 
-1. Bump `version` in `daml/daml.yaml`.
-2. Point `upgrades:` at the previous DAR and keep that DAR in `daml/upgrades/`.
+1. Bump `version` in `daml/syncvotes/daml.yaml`.
+2. Point `upgrades:` at the previous DAR and keep that DAR in `daml/syncvotes/upgrades/`.
 3. Update the `@daml.js/model` alias in `package.json` to the new version.
 
 An upgrade may change a choice's body, add templates and choices, and add `Optional` fields at the

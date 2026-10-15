@@ -1,5 +1,5 @@
 packages:
-  - ./daml
+  - ./daml/syncvotes
   - ./daml/tests/syncvotes
   - ./daml/concordia
   - ./daml/tests/concordia

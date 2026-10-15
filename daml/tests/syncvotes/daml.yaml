@@ -7,5 +7,5 @@ dependencies:
   - daml-stdlib
   - daml-script
 data-dependencies:
-  - ../../.daml/dist/syncvotes-1.0.4.dar
-  - ../../lib/splice-api-featured-app-v1-1.0.0.dar
+  - ../../syncvotes/.daml/dist/syncvotes-1.0.4.dar
+  - ../../syncvotes/lib/splice-api-featured-app-v1-1.0.0.dar
