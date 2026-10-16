@@ -1,0 +1,67 @@
+-- SPDX-License-Identifier: MIT
+module SyncVotes.Concordia.Ballot where
+
+import Prelude hiding (Action)
+
+import Splice.Util (HasCheckedFetch (..), require)
+import Splice.Api.Token.MetadataV1 (AnyContractId)
+import Cap.Governance.ActionV1 (Action)
+import Cap.Core.Types (Mechanism (..))
+import Cap.Governance.Utils (IsBallot (..))
+import Cap.Governance.Types (Bind)
+import Cap.Core.Types (AuthenticKey)
+import DA.Map (Map)
+import qualified DA.Map as Map
+import qualified SyncVotes.Concordia.Types as V
+
+-- An independently castable right; no shared round is consumed by its choices.
+template Ballot
+  with
+    creator : Party
+    provider : Party
+    voter : Party
+    roundCid : AnyContractId
+    mechanism : Mechanism
+    binds : Map AuthenticKey Bind
+    actionCid : ContractId Action
+    openedAt : Time
+    closesAt : Time
+    openingShare : Int
+    openingSince : Time
+    changeable : Bool
+    vote : Optional V.Vote
+  where
+    signatory creator
+    observer provider, voter
+    ensure openingShare > 0 && openingSince <= openedAt && openedAt < closesAt
+
+    choice Ballot_Cast : ContractId Ballot
+      with cast : V.Vote
+      controller voter
+      do
+        now <- getTime
+        require "voting is open" (now < closesAt)
+        require "ballot is uncast" (vote == None)
+        create this with vote = Some cast
+
+    choice Ballot_Withdraw : ContractId Ballot
+      controller voter
+      do
+        now <- getTime
+        require "voting is open" (now < closesAt)
+        require "votes cannot be changed" changeable
+        require "ballot is cast" (vote /= None)
+        create this with vote = None
+
+    choice Ballot_Consume : ()
+      controller provider
+      do pure ()
+
+instance HasCheckedFetch Ballot Mechanism where
+  contractGroupId ballot = ballot.mechanism
+
+instance IsBallot Ballot V.Vote (ContractId Action) where
+  castsOf ballot = Map.singleton ballot.voter ballot.vote
+  bindsOf ballot = ballot.binds
+  actionOf ballot = ballot.actionCid
+  consume cid = exercise cid Ballot_Consume

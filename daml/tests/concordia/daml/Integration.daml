@@ -10,14 +10,17 @@ import Prelude hiding (Action)
 import Daml.Script
 import qualified DA.Map as Map
 import qualified DA.Set as Set
+import Cap.Governance.Utils (weighBallots)
 import DA.Time (addRelTime, days, seconds)
 
 import Cap.Governance.ExecutableV1 (Executable_Execute (..))
 import SyncVotes.Concordia.Governance
-import SyncVotes.Concordia.Keys (daoKey, memberKey)
+import SyncVotes.Concordia.Keys (daoKey, memberKey, targetKey, procedureName)
+import Cap.Core.Types (Mechanism (..))
 import SyncVotes.Concordia.Target (Target (..))
 import SyncVotes.Concordia.Member (Member (..))
 import SyncVotes.Concordia.Round (Round (..), Member_Cast (..), Proposal_Tally (..))
+import qualified SyncVotes.Concordia.Ballot as Probe
 import qualified SyncVotes.Concordia.Types as V
 import Fixtures (args, daoPins, open, ownWeight, plain, refuses, target, targetPins)
 import SyncVotesVocabulary
@@ -797,3 +800,173 @@ wrongDaoAndAuthority = script do
 
 -- Interface entitlement, expiry and cancellation are tested in
 -- ConcordiaInterfaces rather than duplicated among voting scripts.
+
+-- | An issuer creates separate uncast rights; each voter casts on their own CID without replacing the round.
+parallelBallotAuthority : Script ()
+parallelBallotAuthority = script do
+  f <- open V.Signal plain
+  opened <- queryContractId f.creator f.round
+  round <- case opened of Some r -> pure r; None -> abort "expected opening round"
+  aliceRight <- submit f.creator do
+    createCmd Probe.Ballot with
+      creator = f.creator; provider = f.provider; voter = f.alice
+      roundCid = coerceContractId f.round
+      mechanism = Mechanism with
+        resolver = targetKey f.creator "round"
+        resolverCid = None
+        procedure = procedureName
+        id = "round"
+      binds = Map.empty; actionCid = toInterfaceContractId f.action; openedAt = round.openedAt
+      closesAt = f.closesAt; openingShare = 5; openingSince = round.openedAt
+      changeable = False; vote = None
+  bobRight <- submit f.creator do
+    createCmd Probe.Ballot with
+      creator = f.creator; provider = f.provider; voter = f.bob
+      roundCid = coerceContractId f.round
+      mechanism = Mechanism with
+        resolver = targetKey f.creator "round"
+        resolverCid = None
+        procedure = procedureName
+        id = "round"
+      binds = Map.empty; actionCid = toInterfaceContractId f.action; openedAt = round.openedAt
+      closesAt = f.closesAt; openingShare = 3; openingSince = round.openedAt
+      changeable = False; vote = None
+  noBob <- trySubmit (actAs f.bob <> readAs f.alice) do
+    exerciseCmd aliceRight Probe.Ballot_Cast with cast = V.No
+  refuses "requires authorizers" noBob
+  noCreator <- trySubmit (actAs f.creator <> readAs f.bob) do
+    exerciseCmd bobRight Probe.Ballot_Cast with cast = V.No
+  refuses "requires authorizers" noCreator
+  noProvider <- trySubmit (actAs f.provider <> readAs f.bob) do
+    exerciseCmd bobRight Probe.Ballot_Cast with cast = V.No
+  refuses "requires authorizers" noProvider
+  aliceCast <- submit f.alice do
+    exerciseCmd aliceRight Probe.Ballot_Cast with cast = V.Yes
+  bobCast <- submit f.bob do
+    exerciseCmd bobRight Probe.Ballot_Cast with cast = V.Abstain
+  aliceSeen <- queryContractId f.alice aliceCast
+  bobSeen <- queryContractId f.bob bobCast
+  providerSeen <- queryContractId f.provider aliceCast
+  assert (fmap (.vote) aliceSeen == Some (Some V.Yes))
+  assert (fmap (.vote) bobSeen == Some (Some V.Abstain))
+  assert (fmap (.vote) providerSeen == Some (Some V.Yes))
+  unchanged <- queryContractId f.creator f.round
+  assert (unchanged /= None)
+  stale <- trySubmit f.alice do
+    exerciseCmd aliceRight Probe.Ballot_Cast with cast = V.No
+  refuses "Could not find contract" stale
+  duplicate <- trySubmit f.alice do
+    exerciseCmd aliceCast Probe.Ballot_Cast with cast = V.No
+  refuses "ballot is uncast" duplicate
+  providerConsume <- submit f.provider do
+    exerciseCmd bobCast Probe.Ballot_Consume
+  assert (providerConsume == ())
+  gone <- queryContractId f.provider bobCast
+  assert (gone == None)
+
+-- A test-only resolver for Concordias presented-cast uniqueness check.
+template PresentedBallotCheck
+  with provider : Party
+  where
+    signatory provider
+
+    choice PresentedBallotCheck_Weigh : ()
+      with
+        first : ContractId Probe.Ballot
+        second : ContractId Probe.Ballot
+        weights : Map.Map Party Decimal
+      controller provider
+      do
+        a <- fetch first
+        b <- fetch second
+        _ <- weighBallots Some weights [(first, a), (second, b)]
+        pure ()
+
+-- | Duplicate presented voters are refused by Concordia even for distinct live ballot CIDs.
+parallelBallotDuplicatePresentedVoter : Script ()
+parallelBallotDuplicatePresentedVoter = script do
+  f <- open V.Signal plain
+  opened <- queryContractId f.creator f.round
+  round <- case opened of Some r -> pure r; None -> abort "expected opening round"
+  let mechanism = Mechanism with
+        resolver = targetKey f.creator "round"
+        resolverCid = None
+        procedure = procedureName
+        id = "round"
+  first <- submit f.creator do
+    createCmd Probe.Ballot with
+      creator = f.creator; provider = f.provider; voter = f.bob
+      roundCid = coerceContractId f.round; mechanism; binds = Map.empty
+      actionCid = toInterfaceContractId f.action
+      openedAt = round.openedAt; closesAt = f.closesAt
+      openingShare = 3; openingSince = round.openedAt
+      changeable = False; vote = None
+  second <- submit f.creator do
+    createCmd Probe.Ballot with
+      creator = f.creator; provider = f.provider; voter = f.bob
+      roundCid = coerceContractId f.round; mechanism; binds = Map.empty
+      actionCid = toInterfaceContractId f.action
+      openedAt = round.openedAt; closesAt = f.closesAt
+      openingShare = 3; openingSince = round.openedAt
+      changeable = False; vote = None
+  votedFirst <- submit f.bob do
+    exerciseCmd first Probe.Ballot_Cast with cast = V.Yes
+  votedSecond <- submit f.bob do
+    exerciseCmd second Probe.Ballot_Cast with cast = V.No
+  checker <- submit f.provider do createCmd PresentedBallotCheck with provider = f.provider
+  check <- trySubmit f.provider do
+    exerciseCmd checker PresentedBallotCheck_Weigh with
+      first = votedFirst; second = votedSecond; weights = round.weights
+  refuses "the presented ballots come from distinct voters" check
+
+-- | Withdrawal is a voter-controlled successor, refused for fixed votes and for outsiders.
+parallelBallotWithdrawal : Script ()
+parallelBallotWithdrawal = script do
+  f <- open V.Signal plain
+  opened <- queryContractId f.creator f.round
+  round <- case opened of Some r -> pure r; None -> abort "expected opening round"
+  right <- submit f.creator do
+    createCmd Probe.Ballot with
+      creator = f.creator; provider = f.provider; voter = f.bob
+      roundCid = coerceContractId f.round
+      mechanism = Mechanism with
+        resolver = targetKey f.creator "round"
+        resolverCid = None
+        procedure = procedureName
+        id = "round"
+      binds = Map.empty; actionCid = toInterfaceContractId f.action; openedAt = round.openedAt
+      closesAt = f.closesAt; openingShare = 3; openingSince = round.openedAt
+      changeable = True; vote = None
+  uncast <- trySubmit f.bob do
+    exerciseCmd right Probe.Ballot_Withdraw
+  refuses "ballot is cast" uncast
+  first <- submit f.bob do
+    exerciseCmd right Probe.Ballot_Cast with cast = V.No
+  outsider <- trySubmit (actAs f.carol <> readAs f.bob) do
+    exerciseCmd first Probe.Ballot_Withdraw
+  refuses "requires authorizers" outsider
+  second <- submit f.bob do
+    exerciseCmd first Probe.Ballot_Withdraw
+  after <- queryContractId f.bob second
+  assert (fmap (.vote) after == Some None)
+  third <- submit f.bob do
+    exerciseCmd second Probe.Ballot_Cast with cast = V.Yes
+  latest <- queryContractId f.bob third
+  assert (fmap (.vote) latest == Some (Some V.Yes))
+  fixed <- submit f.creator do
+    createCmd Probe.Ballot with
+      creator = f.creator; provider = f.provider; voter = f.bob
+      roundCid = coerceContractId f.round
+      mechanism = Mechanism with
+        resolver = targetKey f.creator "round"
+        resolverCid = None
+        procedure = procedureName
+        id = "round"
+      binds = Map.empty; actionCid = toInterfaceContractId f.action; openedAt = round.openedAt
+      closesAt = f.closesAt; openingShare = 3; openingSince = round.openedAt
+      changeable = False; vote = None
+  fixedCast <- submit f.bob do
+    exerciseCmd fixed Probe.Ballot_Cast with cast = V.Yes
+  refused <- trySubmit f.bob do
+    exerciseCmd fixedCast Probe.Ballot_Withdraw
+  refuses "votes cannot be changed" refused
