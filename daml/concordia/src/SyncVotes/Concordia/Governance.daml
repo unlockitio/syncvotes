@@ -30,13 +30,13 @@ import qualified SyncVotes.Concordia.Types as V
 -- A proposed effect carries the DAO authority into its authorized execution.
 template ProposalAction
   with
-    owner : Party
+    creator : Party
     provider : Party
     targetLabel : Text
     effect : V.Effect
     viewers : Set.Set Party
   where
-    signatory owner, provider
+    signatory creator, provider
     observer Set.toList viewers
     ensure executable effect && case effect of
       V.SetRules rules -> V.validSettings rules
@@ -47,23 +47,23 @@ template ProposalAction
 
     interface instance Action for ProposalAction where
       view = ActionView with
-        authorizers = [[owner]]
-        binds = actionBinds provider owner targetLabel effect
+        authorizers = [[creator]]
+        binds = actionBinds provider creator targetLabel effect
         meta = emptyMetadata
 
       action_readStateImpl key cid
-        | key == daoKey provider owner targetLabel = readState @DAO key cid
-        | key == targetKey owner targetLabel = readState @Target key cid
+        | key == daoKey provider creator targetLabel = readState @DAO key cid
+        | key == targetKey creator targetLabel = readState @Target key cid
         | otherwise = abort "unknown action target"
 
       action_authorizeExecutionImpl _ args = do
-        binds <- mergeBinds (actionBinds provider owner targetLabel effect) args.binds
+        binds <- mergeBinds (actionBinds provider creator targetLabel effect) args.binds
         require "execution authority must be the action owner"
-          (args.executionCore.authorities == Set.singleton owner)
+          (args.executionCore.authorities == Set.singleton creator)
         require "the outcome must be one this action can carry out"
           (optional False (carries effect) args.outcome)
         cid <- create ProposalExecution with
-          owner; provider; targetLabel; effect
+          creator; provider; targetLabel; effect
           core = args.executionCore; binds; outcome = args.outcome
         pure Action_AuthorizeExecutionResult with
           executionCids = [toInterfaceContractId cid]; meta = emptyMetadata
@@ -71,7 +71,7 @@ template ProposalAction
 -- The authorized effect is consumed when executed, so it runs at most once.
 template ProposalExecution
   with
-    owner : Party
+    creator : Party
     provider : Party
     targetLabel : Text
     effect : V.Effect
@@ -79,7 +79,7 @@ template ProposalExecution
     binds : Map AuthenticKey Bind
     outcome : Optional AnyValue
   where
-    signatory owner, provider
+    signatory creator, provider
 
     interface instance Executable for ProposalExecution where
       view = ExecutableView with executionCore = core; binds; outcome
@@ -98,9 +98,9 @@ template ProposalExecution
                 _ -> abort "the authorized choice is not an option index")
               _ -> abort "the authorized outcome is not a choice"
             chosen <- forA picks (\i -> orAbort "no such option" (index i options))
-            setInfo (targetKey owner targetLabel) binds targets (T.intercalate ", " chosen)
+            setInfo (targetKey creator targetLabel) binds targets (T.intercalate ", " chosen)
           _ | V.changesDao effect -> do
-                (cid, _) <- checkTarget @DAO (==) (daoKey provider owner targetLabel) binds targets
+                (cid, _) <- checkTarget @DAO (==) (daoKey provider creator targetLabel) binds targets
                 result <- exercise cid DAO_Apply with effect
                 pure (case result of
                   Some updated -> [coerceContractId updated]
@@ -243,7 +243,7 @@ template DAO
           (not (V.changesDao effect) || (V.Settings with rule; votingDays) == rules)
         action <- fetch (coerceContractId actionCid : ContractId ProposalAction)
         require "the action belongs to this DAO and matches its effect"
-          (action.owner == creator && action.provider == provider
+          (action.creator == creator && action.provider == provider
             && action.effect == effect
             && (not (V.changesDao effect) || action.targetLabel == daoId))
         now <- getTime
@@ -257,7 +257,7 @@ template DAO
           && dedup (map (.party) membersRead) == map (.party) membersRead)
         let snapshot = Map.fromListWithR (+) (Map.values registered)
         create Round with
-          owner = creator; provider; operator; id
+          creator = creator; provider; operator; id
           voters = Set.fromList (map (.party) membersRead)
           weightKeys = Set.fromList (Map.keys sources)
           weights = snapshot

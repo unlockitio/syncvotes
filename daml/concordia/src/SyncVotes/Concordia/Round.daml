@@ -31,7 +31,7 @@ asValue (V.ChosenMany is) = AV_List (map AV_Int is)
 
 template Ballot
   with
-    owner : Party
+    creator : Party
     provider : Party
     voter : Party
     mechanism : Mechanism
@@ -41,10 +41,10 @@ template Ballot
     share : Int
     closesAt : Time
   where
-    signatory voter, owner
+    signatory voter, creator
 
     choice Ballot_Consume : ()
-      controller owner
+      controller creator
       do pure ()
 
 instance HasCheckedFetch Ballot Mechanism where
@@ -70,7 +70,7 @@ validVote effect vote = case (effect, vote) of
 
 template Round
   with
-    owner : Party
+    creator : Party
     provider : Party
     operator : Party
     id : Text
@@ -87,7 +87,7 @@ template Round
     effect : V.Effect
     roll : Map Party (ContractId Ballot)
   where
-    signatory owner
+    signatory creator
     observer operator :: Set.toList voters
     ensure V.validRule rule && Set.size voters > 0 && eligible > 0
       && case effect of
@@ -119,7 +119,7 @@ template Round
             exercise recorded Ballot_Consume
         require "the weight presented is one this round registers" (Set.member weightKey weightKeys)
         own <- fetchChecked weightKey weightSource
-        require "the member belongs to this DAO and voter" (own.party == voter && own.provider == provider && own.creator == owner && own.daoId == id)
+        require "the member belongs to this DAO and voter" (own.party == voter && own.provider == provider && own.creator == creator && own.daoId == id)
         require "joined after the vote opened" (own.since <= openedAt)
         require "membership has the opening identity"
           (Map.lookup voter openingSince == Some own.since)
@@ -127,12 +127,12 @@ template Round
         action <- fetch actionCid
         pinned <- pinStatesWith (action_readStateImpl action) (view action).binds targets
         let mechanism = Mechanism with
-              resolver = targetKey owner id
+              resolver = targetKey creator id
               resolverCid = None
               procedure = procedureName
               id
         ballot <- create Ballot with
-          owner; provider; voter; mechanism; actionCid; binds = pinned; vote; share; closesAt
+          creator; provider; voter; mechanism; actionCid; binds = pinned; vote; share; closesAt
         next <- create this with roll = Map.insert voter ballot roll
         pure (next, ballot)
 
@@ -149,17 +149,17 @@ template Round
         require "changeable votes wait until close" (not rule.changeable || now >= closesAt)
         require "execution expires after resolution" (expiresAt > now)
         let mechanism = Mechanism with
-              resolver = targetKey owner id
+              resolver = targetKey creator id
               resolverCid = None
               procedure = procedureName
               id
-        requireMechanism (targetKey owner id) (coerceContractId self) procedureName mechanism
+        requireMechanism (targetKey creator id) (coerceContractId self) procedureName mechanism
         presented <- fetchGroup mechanism ballots
         require "supply exactly the ballots recorded by this round"
           (Map.fromList [(b.voter, cid) | (cid, b) <- presented] == roll
             && length presented == Map.size roll)
         require "ballots are for this DAO, action and window"
-          (all (\b -> b.owner == owner && b.provider == provider
+          (all (\b -> b.creator == creator && b.provider == provider
             && b.actionCid == actionCid && b.closesAt == closesAt) (map snd presented))
         require "the presented weight contracts are exactly the registered ones"
           (Map.keys weightSources == Set.toList weightKeys)
@@ -186,10 +186,10 @@ template Round
                 require "ballot target pins agree" (all (== first) rest)
                 pure first
             result <- exercise actionCid Action_AuthorizeExecution with
-              actors = [owner]
+              actors = [creator]
               executionCore = ExecutionCore with
-                authorities = Set.singleton owner
-                availableActions = Map.singleton EA_Execute [[owner]]
+                authorities = Set.singleton creator
+                availableActions = Map.singleton EA_Execute [[creator]]
                 opensAt = now
                 cancelAt = now
                 expiresAt = Some expiresAt

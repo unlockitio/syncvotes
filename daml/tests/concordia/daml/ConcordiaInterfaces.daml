@@ -32,14 +32,14 @@ resolvedDaoChangeUsesExecutable = script do
   (round, ballot) <- pinStatesWithViaMemberCast f f.round f.alice V.Yes targets
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, outcome) <- weighBallotsViaProposalTally (actAs f.owner) round [ballot] f.weights
+  (executions, outcome) <- weighBallotsViaProposalTally (actAs f.creator) round [ballot] f.weights
     (addRelTime now (days 2))
   assert (outcome == V.Passed)
   executable <- singleExecutionCidFromAuthorization "expected one interface executable after resolution" executions
-  result <- requireSameKeysViaExecutableExecute (actAs [f.owner, f.provider]) executable [f.owner] targets
+  result <- requireSameKeysViaExecutableExecute (actAs [f.creator, f.provider]) executable [f.creator] targets
   case result.created of
     [created] -> do
-      updated <- queryContractId f.owner (coerceContractId created : ContractId DAO)
+      updated <- queryContractId f.creator (coerceContractId created : ContractId DAO)
       assert (fmap (.public) updated == Some True)
     _ -> abort "expected the interface execution to create the changed DAO"
 
@@ -52,29 +52,29 @@ actionAuthorizationAuthorityBoundary = script do
   stranger <- allocateParty "action-stranger"
   now <- getTime
   let core = ExecutionCore with
-        authorities = Set.singleton f.owner
-        availableActions = Map.singleton EA_Execute [[f.owner]]
+        authorities = Set.singleton f.creator
+        availableActions = Map.singleton EA_Execute [[f.creator]]
         opensAt = now; cancelAt = now
         expiresAt = Some (addRelTime now (days 1)); meta = emptyMetadata
       authorize actors = Action_AuthorizeExecution with
         actors; executionCore = core; outcome = Some (AV_Bool True)
         binds = Map.empty; extraArgs = args
   let actionCid = toInterfaceContractId f.action : ContractId Action
-  rejected <- trySubmit (actAs stranger <> readAs f.owner) do
+  rejected <- trySubmit (actAs stranger <> readAs f.creator) do
     exerciseCmd actionCid (authorize [stranger])
   refuses "the actors are an authorizer set of this action" rejected
-  authorized <- submit (actAs [f.owner, f.provider]) do
-    exerciseCmd actionCid (authorize [f.owner])
+  authorized <- submit (actAs [f.creator, f.provider]) do
+    exerciseCmd actionCid (authorize [f.creator])
   case (authorized.executionCids : [ContractId Executable]) of
     [executable] -> do
-      result <- submit (actAs [f.owner, f.provider]) do
+      result <- submit (actAs [f.creator, f.provider]) do
         exerciseCmd executable Executable_Execute with
-          actors = [f.owner]; targets = Map.empty; extraArgs = args
+          actors = [f.creator]; targets = Map.empty; extraArgs = args
       assert (result.created == [])
     _ -> abort "expected direct joint-authority authorization of a signal"
 
 -- | The round issues execute entitlement only: a stranger cannot execute and
--- even the owner cannot cancel. Expire is refused before the deadline. After
+-- even the creator cannot cancel. Expire is refused before the deadline. After
 -- the deadline Execute is closed and Expire is accepted. This is a window
 -- boundary, not a vote-only gate.
 executableCancelAndExpireBoundary : Script ()
@@ -83,27 +83,27 @@ executableCancelAndExpireBoundary = script do
   (round, ballot) <- pinStatesWithViaMemberCast f f.round f.alice V.Yes Map.empty
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, outcome) <- weighBallotsViaProposalTally (actAs f.owner) round [ballot] f.weights
+  (executions, outcome) <- weighBallotsViaProposalTally (actAs f.creator) round [ballot] f.weights
     (addRelTime now (days 2))
   assert (outcome == V.Passed)
   executable <- singleExecutionCidFromAuthorization "expected one interface executable after resolution" executions
   outsider <- allocateParty "window-outsider"
-  denied <- trySubmit (actAs outsider <> readAs f.owner) do
+  denied <- trySubmit (actAs outsider <> readAs f.creator) do
     exerciseCmd executable Executable_Execute with
       actors = [outsider]; targets = Map.empty; extraArgs = args
   refuses "entitled to execute" denied
-  cancelled <- trySubmit f.owner do
+  cancelled <- trySubmit f.creator do
     exerciseCmd executable Executable_Cancel with
-      actors = [f.owner]; extraArgs = args
+      actors = [f.creator]; extraArgs = args
   refuses "the actors are entitled to cancel" cancelled
-  premature <- trySubmit f.owner do
-    exerciseCmd executable Executable_Expire with actor = f.owner
+  premature <- trySubmit f.creator do
+    exerciseCmd executable Executable_Expire with actor = f.creator
   refuses "the execution has expired" premature
   setTime (addRelTime now (days 3))
-  expired <- trySubmit f.owner do
+  expired <- trySubmit f.creator do
     exerciseCmd executable Executable_Execute with
-      actors = [f.owner]; targets = Map.empty; extraArgs = args
+      actors = [f.creator]; targets = Map.empty; extraArgs = args
   refuses "the execution window is open" expired
-  _ <- submit f.owner do
-    exerciseCmd executable Executable_Expire with actor = f.owner
+  _ <- submit f.creator do
+    exerciseCmd executable Executable_Expire with actor = f.creator
   pure ()

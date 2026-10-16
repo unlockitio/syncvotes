@@ -17,11 +17,11 @@ import DA.Time (addRelTime, days)
 founderAndShares : Script ()
 founderAndShares = script do
   f <- open V.Signal plain
-  found <- queryContractId f.owner f.dao
+  found <- queryContractId f.creator f.dao
   assert (fmap (.members) found == Some 3 && fmap (.units) found == Some 10)
-  members <- query @Member f.owner
+  members <- query @Member f.creator
   assert (length members == 3 && sum (map ((.share) . snd) members) == 10)
-  invalid <- trySubmit (actAs [f.provider, f.owner]) do
+  invalid <- trySubmit (actAs [f.provider, f.creator]) do
     exerciseCmd f.dao DAO_ChangeShares with
       changes = [(f.bob, -1)]; current = [snd (ownWeight f f.bob)]
   refuses "valid share changes" invalid
@@ -56,12 +56,12 @@ addMemberWithoutMemberApproval : Script ()
 addMemberWithoutMemberApproval = script do
   f <- open V.Signal plain
   invitee <- allocateParty "administrative-invitee"
-  changed <- submit (actAs [f.provider, f.owner]) do
+  changed <- submit (actAs [f.provider, f.creator]) do
     exerciseCmd f.dao DAO_ChangeShares with
       changes = [(invitee, 1)]; current = []
-  updated <- queryContractId f.owner changed
+  updated <- queryContractId f.creator changed
   assert (fmap (.members) updated == Some 4 && fmap (.units) updated == Some 11)
-  members <- query @Member f.owner
+  members <- query @Member f.creator
   assert (any (\(_, m) -> m.party == invitee && m.share == 1) members)
 
 -- | Direct joint-authority administrative reshare archives the previous
@@ -70,24 +70,24 @@ reshareAndRemove : Script ()
 reshareAndRemove = script do
   f <- open V.Signal plain
   let (_, bob) = ownWeight f f.bob
-  denied <- trySubmit (actAs f.provider <> readAs f.owner) do
+  denied <- trySubmit (actAs f.provider <> readAs f.creator) do
     exerciseCmd f.dao DAO_ChangeShares with changes = [(f.bob, 4)]; current = [bob]
   refuses "requires authorizers" denied
   setTime (addRelTime f.closesAt (days 1))
-  next <- submit (actAs [f.provider, f.owner]) do
+  next <- submit (actAs [f.provider, f.creator]) do
     exerciseCmd f.dao DAO_ChangeShares with changes = [(f.bob, 4)]; current = [bob]
-  archived <- queryContractId f.owner bob
+  archived <- queryContractId f.creator bob
   assert (archived == None)
-  updated <- queryContractId f.owner next
+  updated <- queryContractId f.creator next
   assert (fmap (.units) updated == Some 11 && fmap (.members) updated == Some 3)
-  active <- query @Member f.owner
+  active <- query @Member f.creator
   let reshared = [(cid, m) | (cid, m) <- active, m.party == f.bob]
   case reshared of
     [(cid, m)] -> do
       assert (m.share == 4 && m.shareSince > m.since)
-      last <- submit (actAs [f.provider, f.owner]) do
+      last <- submit (actAs [f.provider, f.creator]) do
         exerciseCmd next DAO_ChangeShares with changes = [(f.bob, 0)]; current = [cid]
-      final <- queryContractId f.owner last
+      final <- queryContractId f.creator last
       assert (fmap (.units) final == Some 7 && fmap (.members) final == Some 2)
     _ -> abort "expected one reshared member"
 
@@ -97,22 +97,22 @@ reshareAndRemove = script do
 daoChangeAuthorityBoundary : Script ()
 daoChangeAuthorityBoundary = script do
   f <- open (V.SetPublic with public = True) plain
-  alone <- trySubmit f.owner do
+  alone <- trySubmit f.creator do
     exerciseCmd f.dao DAO_Apply with effect = V.SetPublic with public = True
   refuses "requires authorizers" alone
-  byProvider <- trySubmit (actAs f.provider <> readAs f.owner) do
+  byProvider <- trySubmit (actAs f.provider <> readAs f.creator) do
     exerciseCmd f.dao DAO_Apply with effect = V.SetPublic with public = True
   refuses "requires authorizers" byProvider
-  shares <- trySubmit (actAs [f.owner, f.provider]) do
+  shares <- trySubmit (actAs [f.creator, f.provider]) do
     exerciseCmd f.dao DAO_Apply with
       effect = V.SetShares with changes = [(f.bob, 4)]
   refuses "this choice carries out no such DAO effect" shares
   -- Joint authority can apply an ordinary effect directly. This test records
   -- the actual trust boundary rather than implying vote-only enforcement.
-  applied <- submit (actAs [f.owner, f.provider]) do
+  applied <- submit (actAs [f.creator, f.provider]) do
     exerciseCmd f.dao DAO_Apply with effect = V.SetPublic with public = True
   case applied of
     Some updated -> do
-      found <- queryContractId f.owner updated
+      found <- queryContractId f.creator updated
       assert (fmap (.public) found == Some True)
     None -> abort "expected direct joint-authority DAO application"

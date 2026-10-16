@@ -17,17 +17,17 @@ import qualified SyncVotes.Concordia.Types as V
 
 template Target
   with
-    owner : Party
+    creator : Party
     label : Text
     info : Text
     viewers : Set Party
   where
-    signatory owner
+    signatory creator
     observer Set.toList viewers
 
     choice Target_SetInfo : ContractId Target
       with newInfo : Text
-      controller owner
+      controller creator
       do create this with info = newInfo
 
 instance HasCheckedFetch Target AuthenticKey where
@@ -50,11 +50,11 @@ carries effect value = case (effect, value) of
   _ -> False
 
 actionBinds : Party -> Party -> Text -> V.Effect -> Map AuthenticKey Bind
-actionBinds provider owner label effect = case effect of
+actionBinds provider creator label effect = case effect of
   V.Signal -> Map.empty
   _ | V.changesDao effect ->
-        Map.singleton (daoKey provider owner label) (Bind with state = None; cid = None)
-  _ -> Map.singleton (targetKey owner label) (Bind with state = None; cid = None)
+        Map.singleton (daoKey provider creator label) (Bind with state = None; cid = None)
+  _ -> Map.singleton (targetKey creator label) (Bind with state = None; cid = None)
 
 setInfo
   : AuthenticKey -> Map AuthenticKey Bind -> Map AuthenticKey AnyContractId -> Text

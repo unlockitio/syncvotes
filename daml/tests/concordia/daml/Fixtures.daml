@@ -46,7 +46,7 @@ plain = V.Rule with
 -- | A DAO of three members with unequal shares: 5, 3 and 2 units of ten.
 data Fixture = Fixture
   with
-    owner : Party
+    creator : Party
     provider : Party
     dao : ContractId DAO
     alice : Party
@@ -65,35 +65,35 @@ data Fixture = Fixture
 open : V.Effect -> V.Rule -> Script Fixture
 open effect rule = do
   alice <- allocateParty "alice"
-  let owner = alice
+  let creator = alice
   provider <- allocateParty "provider"
   bob <- allocateParty "bob"
   carol <- allocateParty "carol"
   let voters = Set.fromList [alice, bob, carol]
-  account <- submit provider do createCmd Account with provider; user = owner
-  dao <- submit owner do
+  account <- submit provider do createCmd Account with provider; user = creator
+  dao <- submit creator do
     exerciseCmd account Account_CreateDAO with
       daoId = "round"; name = "DAO"; description = ""; image = None; equal = False
       rules = V.Settings with rule; votingDays = 1
       decisions = V.Settings with rule; votingDays = 1
       shares = [(alice, 5), (bob, 3), (carol, 2)]
-  registered <- query @Member owner
-  let weights = [(memberKey provider owner "round" m.party, cid) | (cid, m) <- registered]
-      holders = [(m.party, memberKey provider owner "round" m.party) | (_, m) <- registered]
-  action <- submit (actAs [owner, provider]) do
+  registered <- query @Member creator
+  let weights = [(memberKey provider creator "round" m.party, cid) | (cid, m) <- registered]
+      holders = [(m.party, memberKey provider creator "round" m.party) | (_, m) <- registered]
+  action <- submit (actAs [creator, provider]) do
     createCmd ProposalAction with
-      owner; provider
+      creator; provider
       -- A DAO change names the DAO; anything else names its Target.
       targetLabel = if V.changesDao effect then "round" else "dao"
       effect; viewers = voters
-  round <- submit owner do
+  round <- submit creator do
     exerciseCmd dao DAO_Open with
-      id = "round"; operator = owner; actionCid = toInterfaceContractId action
+      id = "round"; operator = creator; actionCid = toInterfaceContractId action
       effect; rule; votingDays = 1; sources = Map.fromList weights
-  opened <- queryContractId owner round
+  opened <- queryContractId creator round
   let closesAt = case opened of Some r -> r.closesAt; None -> error "round missing"
   pure Fixture with
-    owner; provider; dao; alice; bob; carol
+    creator; provider; dao; alice; bob; carol
     weights = Map.fromList weights; holders; action; round; closesAt
 
 -- | The voter's own registered membership: the key and contract they can see.
@@ -106,15 +106,15 @@ ownWeight f voter = case lookup voter f.holders of
 
 -- | The DAO's own target contract, which an executed effect writes to.
 target : Party -> [Party] -> Script (ContractId Target)
-target owner viewers = submit owner do
-  createCmd Target with owner; label = "dao"; info = "original"; viewers = Set.fromList viewers
+target creator viewers = submit creator do
+  createCmd Target with creator; label = "dao"; info = "original"; viewers = Set.fromList viewers
 
 targetPins : Party -> ContractId Target -> Map AuthenticKey Meta.AnyContractId
-targetPins owner cid = Map.singleton (targetKey owner "dao") (coerceContractId cid)
+targetPins creator cid = Map.singleton (targetKey creator "dao") (coerceContractId cid)
 
 -- | The DAO itself as the target a vote-gated DAO change acts on.
 daoPins : Fixture -> ContractId DAO -> Map AuthenticKey Meta.AnyContractId
-daoPins f cid = Map.singleton (daoKey f.provider f.owner "round") (coerceContractId cid)
+daoPins f cid = Map.singleton (daoKey f.provider f.creator "round") (coerceContractId cid)
 
 roundProposalTally : SubmitOptions -> ContractId Round -> [ContractId Ballot]
   -> Map AuthenticKey (ContractId Member) -> Time
@@ -144,11 +144,11 @@ castTallyAndExecuteDaoChange effect = do
   (r2, b2) <- roundMemberCast f r1 f.bob V.Yes targets
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, outcome) <- roundProposalTally (actAs f.owner) r2 [b1, b2] f.weights
+  (executions, outcome) <- roundProposalTally (actAs f.creator) r2 [b1, b2] f.weights
     (addRelTime now (days 2))
   assert (outcome == V.Passed)
   executable <- exactlyOneExecutable "expected one executable for a passed DAO change" executions
-  result <- executableExecute (actAs [f.owner, f.provider]) executable [f.owner] targets
+  result <- executableExecute (actAs [f.creator, f.provider]) executable [f.creator] targets
   case result.created of
     [created] -> pure (f, coerceContractId created)
     [] -> pure (f, f.dao)

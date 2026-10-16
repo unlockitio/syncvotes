@@ -6,7 +6,7 @@ import qualified DA.Set as Set
 import Cap.Core.Types (AuthenticKey (..))
 
 targetKey : Party -> Text -> AuthenticKey
-targetKey owner label = AuthenticKey with authorities = Set.singleton owner; id = label
+targetKey creator label = AuthenticKey with authorities = Set.singleton creator; id = label
 
 procedureName : Text
 procedureName = "syncvotes-concordia-weighted"
