@@ -42,6 +42,7 @@ template Ballot
     closesAt : Time
   where
     signatory voter, creator
+    observer provider
 
     choice Ballot_Consume : ()
       controller creator
@@ -72,7 +73,6 @@ template Round
   with
     creator : Party
     provider : Party
-    operator : Party
     id : Text
     voters : Set Party
     weightKeys : Set AuthenticKey
@@ -88,7 +88,7 @@ template Round
     roll : Map Party (ContractId Ballot)
   where
     signatory creator
-    observer operator :: Set.toList voters
+    observer provider :: Set.toList voters
     ensure V.validRule rule && Set.size voters > 0 && eligible > 0
       && case effect of
         V.Choose options _ -> V.validOptions options
@@ -142,7 +142,7 @@ template Round
         weightSources : Map AuthenticKey (ContractId Member)
         expiresAt : Time
         extraArgs : ExtraArgs
-      controller operator
+      controller provider
       do
         now <- getTime
         require "voting has closed or early resolution is enabled" (now >= closesAt || rule.early)

@@ -227,7 +227,6 @@ template DAO
     nonconsuming choice DAO_Open : ContractId Round
       with
         id : Text
-        operator : Party
         actionCid : ContractId Action
         effect : V.Effect
         rule : V.Rule
@@ -257,7 +256,7 @@ template DAO
           && dedup (map (.party) membersRead) == map (.party) membersRead)
         let snapshot = Map.fromListWithR (+) (Map.values registered)
         create Round with
-          creator = creator; provider; operator; id
+          creator = creator; provider; id
           voters = Set.fromList (map (.party) membersRead)
           weightKeys = Set.fromList (Map.keys sources)
           weights = snapshot

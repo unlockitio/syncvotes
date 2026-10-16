@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MIT
 -- Independent syncvotes-concordia test package, not the deployed SyncVotes 1.0.4.
--- Concordia interface boundaries: an operator's resolved round authorizes an
+-- Concordia interface boundaries: a provider-resolved round authorizes an
 -- Action, and the resulting interface-typed Executable governs execution.
 -- Direct Action authorization is separately tested as an authority boundary;
 -- it is not evidence that every execution was preceded by a vote.
@@ -32,7 +32,7 @@ resolvedDaoChangeUsesExecutable = script do
   (round, ballot) <- pinStatesWithViaMemberCast f f.round f.alice V.Yes targets
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, outcome) <- weighBallotsViaProposalTally (actAs f.creator) round [ballot] f.weights
+  (executions, outcome) <- weighBallotsViaProposalTally (actAs f.provider) round [ballot] f.weights
     (addRelTime now (days 2))
   assert (outcome == V.Passed)
   executable <- singleExecutionCidFromAuthorization "expected one interface executable after resolution" executions
@@ -83,7 +83,7 @@ executableCancelAndExpireBoundary = script do
   (round, ballot) <- pinStatesWithViaMemberCast f f.round f.alice V.Yes Map.empty
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, outcome) <- weighBallotsViaProposalTally (actAs f.creator) round [ballot] f.weights
+  (executions, outcome) <- weighBallotsViaProposalTally (actAs f.provider) round [ballot] f.weights
     (addRelTime now (days 2))
   assert (outcome == V.Passed)
   executable <- singleExecutionCidFromAuthorization "expected one interface executable after resolution" executions

@@ -88,7 +88,7 @@ open effect rule = do
       effect; viewers = voters
   round <- submit creator do
     exerciseCmd dao DAO_Open with
-      id = "round"; operator = creator; actionCid = toInterfaceContractId action
+      id = "round"; actionCid = toInterfaceContractId action
       effect; rule; votingDays = 1; sources = Map.fromList weights
   opened <- queryContractId creator round
   let closesAt = case opened of Some r -> r.closesAt; None -> error "round missing"
@@ -134,7 +134,7 @@ exactlyOneExecutable label executions = case executions of
   [executable] -> pure executable
   _ -> abort label
 
--- | Runs a DAO change end to end: every member votes yes, the operator
+-- | Runs a DAO change end to end: every member votes yes, the provider
 -- resolves after close, and the DAO's own authority executes what passed.
 castTallyAndExecuteDaoChange : V.Effect -> Script (Fixture, ContractId DAO)
 castTallyAndExecuteDaoChange effect = do
@@ -144,7 +144,7 @@ castTallyAndExecuteDaoChange effect = do
   (r2, b2) <- roundMemberCast f r1 f.bob V.Yes targets
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, outcome) <- roundProposalTally (actAs f.creator) r2 [b1, b2] f.weights
+  (executions, outcome) <- roundProposalTally (actAs f.provider) r2 [b1, b2] f.weights
     (addRelTime now (days 2))
   assert (outcome == V.Passed)
   executable <- exactlyOneExecutable "expected one executable for a passed DAO change" executions

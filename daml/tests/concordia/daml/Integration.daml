@@ -34,7 +34,7 @@ weightedMajorityPasses = script do
   (r3, b3) <- castVoteViaMemberCast f r2 f.carol V.No Map.empty
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, outcome) <- tallyProposalViaProposalTally (actAs f.creator) r3 [b1, b2, b3] f.weights
+  (executions, outcome) <- tallyProposalViaProposalTally (actAs f.provider) r3 [b1, b2, b3] f.weights
     (addRelTime now (days 2))
   assert (outcome == V.Passed)
   executable <- singleOutcomeToCarryOut "expected one executable for a passed signal" executions
@@ -50,7 +50,7 @@ weightedMinorityFails = script do
   (r2, b2) <- castVoteViaMemberCast f r1 f.bob V.Yes Map.empty
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, outcome) <- submit f.creator do
+  (executions, outcome) <- submit f.provider do
     exerciseCmd r2 Proposal_Tally with
       ballots = [b1, b2]; weightSources = f.weights
       expiresAt = addRelTime now (days 2); extraArgs = args
@@ -66,7 +66,7 @@ abstentionCountsForQuorumOnly = script do
   (r2, b2) <- castVoteViaMemberCast f r1 f.bob V.Yes Map.empty
   now <- getTime
   setTime (addRelTime now (days 1))
-  (_, outcome) <- submit f.creator do
+  (_, outcome) <- submit f.provider do
     exerciseCmd r2 Proposal_Tally with
       ballots = [b1, b2]; weightSources = f.weights
       expiresAt = addRelTime now (days 2); extraArgs = args
@@ -81,7 +81,7 @@ quorumShortFails = script do
   (r2, b2) <- castVoteViaMemberCast f r1 f.bob V.Yes Map.empty
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, outcome) <- submit f.creator do
+  (executions, outcome) <- submit f.provider do
     exerciseCmd r2 Proposal_Tally with
       ballots = [b1, b2]; weightSources = f.weights
       expiresAt = addRelTime now (days 2); extraArgs = args
@@ -95,7 +95,7 @@ basisOfAllUsesTheWholeElectorate = script do
   (r1, b1) <- castVoteViaMemberCast f f.round f.alice V.Yes Map.empty
   now <- getTime
   setTime (addRelTime now (days 1))
-  (_, ofAll) <- submit f.creator do
+  (_, ofAll) <- submit f.provider do
     exerciseCmd r1 Proposal_Tally with
       ballots = [b1]; weightSources = f.weights
       expiresAt = addRelTime now (days 2); extraArgs = args
@@ -104,7 +104,7 @@ basisOfAllUsesTheWholeElectorate = script do
   (s1, c1) <- castVoteViaMemberCast g g.round g.alice V.Yes Map.empty
   later <- getTime
   setTime (addRelTime later (days 1))
-  (_, ofCast) <- submit g.creator do
+  (_, ofCast) <- submit g.provider do
     exerciseCmd s1 Proposal_Tally with
       ballots = [c1]; weightSources = g.weights
       expiresAt = addRelTime later (days 2); extraArgs = args
@@ -112,27 +112,27 @@ basisOfAllUsesTheWholeElectorate = script do
 
 -- | An early rule settles as soon as the outstanding votes cannot change the
 -- answer: alice and bob hold 8 of 10, so carol's 2 cannot overturn them and the
--- operator resolves before the deadline.
+-- provider resolves before the deadline.
 earlyResolutionBeforeClose : Script ()
 earlyResolutionBeforeClose = script do
   f <- open V.Signal (plain with early = True; basis = V.OfAll)
   (r1, b1) <- castVoteViaMemberCast f f.round f.alice V.Yes Map.empty
   (r2, b2) <- castVoteViaMemberCast f r1 f.bob V.Yes Map.empty
   now <- getTime
-  (_, outcome) <- submit f.creator do
+  (_, outcome) <- submit f.provider do
     exerciseCmd r2 Proposal_Tally with
       ballots = [b1, b2]; weightSources = f.weights
       expiresAt = addRelTime now (days 2); extraArgs = args
   assert (outcome == V.Passed)
 
--- | Without an early rule the same ballots are not countable yet: the operator
+-- | Without an early rule the same ballots are not countable yet: the provider
 -- must wait for the deadline, since the rest of the DAO may still vote.
 earlyRefusedWithoutAnEarlyRule : Script ()
 earlyRefusedWithoutAnEarlyRule = script do
   f <- open V.Signal plain
   (r1, b1) <- castVoteViaMemberCast f f.round f.alice V.Yes Map.empty
   now <- getTime
-  tooSoon <- trySubmit f.creator do
+  tooSoon <- trySubmit f.provider do
     exerciseCmd r1 Proposal_Tally with
       ballots = [b1]; weightSources = f.weights
       expiresAt = addRelTime now (days 2); extraArgs = args
@@ -145,7 +145,7 @@ earlyUnsettledStaysOpen = script do
   f <- open V.Signal (plain with early = True; basis = V.OfAll)
   (r1, b1) <- castVoteViaMemberCast f f.round f.alice V.Yes Map.empty
   now <- getTime
-  unsettled <- trySubmit f.creator do
+  unsettled <- trySubmit f.provider do
     exerciseCmd r1 Proposal_Tally with
       ballots = [b1]; weightSources = f.weights
       expiresAt = addRelTime now (days 2); extraArgs = args
@@ -168,7 +168,7 @@ changeableVoteReplacesTheBallot = script do
   assert (withdrawn == None)
   now <- getTime
   setTime (addRelTime now (days 1))
-  (_, outcome) <- submit f.creator do
+  (_, outcome) <- submit f.provider do
     exerciseCmd r3 Proposal_Tally with
       ballots = [b1, second]; weightSources = f.weights
       expiresAt = addRelTime now (days 2); extraArgs = args
@@ -220,7 +220,7 @@ choiceCarriesTheWinningOption = script do
   (r2, b2) <- castVoteViaMemberCast f r1 f.bob (V.Pick 1) targets
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, outcome) <- tallyProposalViaProposalTally (actAs f.creator) r2 [b1, b2] f.weights
+  (executions, outcome) <- tallyProposalViaProposalTally (actAs f.provider) r2 [b1, b2] f.weights
     (addRelTime now (days 2))
   assert (outcome == V.Chosen 0)
   executable <- singleOutcomeToCarryOut "expected one executable for a decided choice" executions
@@ -244,7 +244,7 @@ tiedChoiceDecidesNothing = script do
   (r3, b3) <- castVoteViaMemberCast f r2 f.carol (V.Pick 1) targets
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, outcome) <- submit f.creator do
+  (executions, outcome) <- submit f.provider do
     exerciseCmd r3 Proposal_Tally with
       ballots = [b1, b2, b3]; weightSources = f.weights
       expiresAt = addRelTime now (days 2); extraArgs = args
@@ -263,7 +263,7 @@ multiChoiceCarriesEveryWinner = script do
   (r3, b3) <- castVoteViaMemberCast f r2 f.carol (V.PickMany [0]) targets
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, outcome) <- tallyProposalViaProposalTally (actAs f.creator) r3 [b1, b2, b3] f.weights
+  (executions, outcome) <- tallyProposalViaProposalTally (actAs f.provider) r3 [b1, b2, b3] f.weights
     (addRelTime now (days 2))
   assert (outcome == V.ChosenMany [0])
   executable <- singleOutcomeToCarryOut "expected one executable for a decided multi-choice" executions
@@ -306,8 +306,9 @@ voteShapeGuards = script do
       weightKey = gKey; weightSource = gOwn; targets = Map.empty
   refuses "vote matches the proposal" picked
 
--- | Who may act: only an eligible member casts a ballot, and only the operator
--- resolves the round.
+-- | A member alone cannot resolve the round. The creator alone cannot
+-- tally either; the distinct provider can see the round and ballot and resolve
+-- a failed vote without borrowing the creator's submission authority.
 authorizationGuards : Script ()
 authorizationGuards = script do
   f <- open V.Signal plain
@@ -318,14 +319,24 @@ authorizationGuards = script do
       voter = outsider; vote = V.Yes; previous = None
       weightKey = key; weightSource = own; targets = Map.empty
   refuses "voter is eligible" foreign
-  (r1, b1) <- castVoteViaMemberCast f f.round f.alice V.Yes Map.empty
+  (r1, b1) <- castVoteViaMemberCast f f.round f.alice V.No Map.empty
   now <- getTime
   setTime (addRelTime now (days 1))
-  notOperator <- trySubmit (actAs f.bob <> readAs f.creator) do
+  notProvider <- trySubmit (actAs f.bob <> readAs f.creator) do
     exerciseCmd r1 Proposal_Tally with
       ballots = [b1]; weightSources = f.weights
       expiresAt = addRelTime now (days 2); extraArgs = args
-  refuses "requires authorizers" notOperator
+  refuses "requires authorizers" notProvider
+  creatorOnly <- trySubmit (actAs f.creator <> readAs f.provider) do
+    exerciseCmd r1 Proposal_Tally with
+      ballots = [b1]; weightSources = f.weights
+      expiresAt = addRelTime now (days 2); extraArgs = args
+  refuses "requires authorizers" creatorOnly
+  (executions, outcome) <- submit f.provider do
+    exerciseCmd r1 Proposal_Tally with
+      ballots = [b1]; weightSources = f.weights
+      expiresAt = addRelTime now (days 2); extraArgs = args
+  assert (outcome == V.Failed && null executions)
 
 -- | A voter votes under their own registered share and nothing else: a weight
 -- the round does not register, and another member's weight, are both refused.
@@ -360,14 +371,14 @@ resolveWeightGuards = script do
   (r1, b1) <- castVoteViaMemberCast f f.round f.alice V.Yes Map.empty
   now <- getTime
   setTime (addRelTime now (days 1))
-  short <- trySubmit f.creator do
+  short <- trySubmit f.provider do
     exerciseCmd r1 Proposal_Tally with
       ballots = [b1]
       weightSources = Map.delete (fst (ownWeight f f.carol)) f.weights
       expiresAt = addRelTime now (days 2); extraArgs = args
   refuses "exactly the registered" short
   let (_, extra) = ownWeight f f.alice
-  surplus <- trySubmit f.creator do
+  surplus <- trySubmit f.provider do
     exerciseCmd r1 Proposal_Tally with
       ballots = [b1]
       weightSources = Map.insert (memberKey f.creator f.creator "extra" f.alice) extra f.weights
@@ -383,7 +394,7 @@ reweighedBallotRefused = script do
   let (_, reweighed) = ownWeight f f.bob
   now <- getTime
   setTime (addRelTime now (days 1))
-  (_, outcome) <- submit f.creator do
+  (_, outcome) <- submit f.provider do
     exerciseCmd r1 Proposal_Tally with
       ballots = [b1]
       weightSources = Map.insert (fst (ownWeight f f.alice)) reweighed f.weights
@@ -400,17 +411,17 @@ rollGuards = script do
   (r2, b2) <- castVoteViaMemberCast f r1 f.bob V.No Map.empty
   now <- getTime
   setTime (addRelTime now (days 1))
-  omitted <- trySubmit f.creator do
+  omitted <- trySubmit f.provider do
     exerciseCmd r2 Proposal_Tally with
       ballots = [b1]; weightSources = f.weights
       expiresAt = addRelTime now (days 2); extraArgs = args
   refuses "supply exactly the ballots recorded by this round" omitted
-  twice <- trySubmit f.creator do
+  twice <- trySubmit f.provider do
     exerciseCmd r2 Proposal_Tally with
       ballots = [b1, b2, b2]; weightSources = f.weights
       expiresAt = addRelTime now (days 2); extraArgs = args
   refuses "the presented contracts are distinct" twice
-  none <- trySubmit f.creator do
+  none <- trySubmit f.provider do
     exerciseCmd r2 Proposal_Tally with
       ballots = []; weightSources = f.weights
       expiresAt = addRelTime now (days 2); extraArgs = args
@@ -436,7 +447,7 @@ roundRefusesInvalidSettings = script do
   f <- open V.Signal plain
   contradictory <- trySubmit f.creator do
     createCmd Round with
-      creator = f.creator; provider = f.creator; operator = f.creator; id = "bad-rule"
+      creator = f.creator; provider = f.creator; id = "bad-rule"
       weights = Map.empty; openingShares = Map.empty; openingSince = Map.empty; eligible = 1; openedAt = f.closesAt
       voters = Set.fromList [f.alice]
       weightKeys = Set.fromList (Map.keys f.weights)
@@ -448,7 +459,7 @@ roundRefusesInvalidSettings = script do
   refuses "Template precondition violated" contradictory
   duplicated <- trySubmit f.creator do
     createCmd Round with
-      creator = f.creator; provider = f.creator; operator = f.creator; id = "bad-options"
+      creator = f.creator; provider = f.creator; id = "bad-options"
       weights = Map.empty; openingShares = Map.empty; openingSince = Map.empty; eligible = 1; openedAt = f.closesAt
       voters = Set.fromList [f.alice]
       weightKeys = Set.fromList (Map.keys f.weights)
@@ -597,7 +608,7 @@ dissolutionLocksTheDao = script do
       viewers = Set.fromList [f.alice, f.bob, f.carol]
   reopened <- trySubmit f.creator do
     exerciseCmd dissolved DAO_Open with
-      id = "round"; operator = f.creator
+      id = "round"
       actionCid = toInterfaceContractId nextAction
       effect = V.SetPublic with public = True
       rule = plain; votingDays = 1; sources = f.weights
@@ -613,7 +624,7 @@ unpassedDaoChangeExecutesNothing = script do
   (r2, b2) <- castVoteViaMemberCast f r1 f.bob V.Yes targets
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, outcome) <- submit f.creator do
+  (executions, outcome) <- submit f.provider do
     exerciseCmd r2 Proposal_Tally with
       ballots = [b1, b2]; weightSources = f.weights
       expiresAt = addRelTime now (days 2); extraArgs = args
@@ -630,7 +641,7 @@ secondExecutionRefused = script do
   (r1, b1) <- castVoteViaMemberCast f f.round f.alice V.Yes targets
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, _) <- tallyProposalViaProposalTally (actAs f.creator) r1 [b1] f.weights
+  (executions, _) <- tallyProposalViaProposalTally (actAs f.provider) r1 [b1] f.weights
     (addRelTime now (days 2))
   executable <- singleOutcomeToCarryOut "expected one executable for a passed DAO change" executions
   result <- carryOutDecisionViaExecutableExecute (actAs [f.creator, f.provider]) executable [f.creator] targets
@@ -651,7 +662,7 @@ daoTargetAndDriftGuards = script do
   (r1, b1) <- castVoteViaMemberCast f f.round f.alice V.Yes targets
   now <- getTime
   setTime (addRelTime now (days 1))
-  (executions, _) <- tallyProposalViaProposalTally (actAs f.creator) r1 [b1] f.weights
+  (executions, _) <- tallyProposalViaProposalTally (actAs f.provider) r1 [b1] f.weights
     (addRelTime now (days 2))
   executable <- singleOutcomeToCarryOut "expected one executable for a passed DAO change" executions
   -- Another DAO under the same creator and provider: a different key.
@@ -695,7 +706,7 @@ daoChangeOpeningGuards = script do
       effect; viewers = Set.fromList [f.alice, f.bob, f.carol]
   otherRule <- trySubmit f.creator do
     exerciseCmd f.dao DAO_Open with
-      id = "round"; operator = f.creator
+      id = "round"
       actionCid = toInterfaceContractId action
       effect; rule = (plain with quorum = 40); votingDays = 1
       sources = f.weights
@@ -706,7 +717,7 @@ daoChangeOpeningGuards = script do
       effect; viewers = Set.fromList [f.alice, f.bob, f.carol]
   wrongTarget <- trySubmit f.creator do
     exerciseCmd f.dao DAO_Open with
-      id = "round"; operator = f.creator
+      id = "round"
       actionCid = toInterfaceContractId elsewhere
       effect; rule = plain; votingDays = 1; sources = f.weights
   refuses "the action belongs to this DAO and matches its effect" wrongTarget
@@ -736,7 +747,7 @@ reshareAfterOpeningResolvesAtSnapshot = script do
   recorded <- queryContractId f.creator ballot
   assert (fmap (.share) recorded == Some 3)
   setTime (addRelTime now (days 1))
-  (_, outcome) <- submit f.creator do
+  (_, outcome) <- submit f.provider do
     exerciseCmd r1 Proposal_Tally with
       ballots = [ballot]; weightSources = f.weights
       expiresAt = addRelTime now (days 2); extraArgs = args
@@ -752,7 +763,7 @@ removedAfterOpeningStillResolves = script do
     exerciseCmd f.dao DAO_ChangeShares with changes = [(f.bob, 0)]; current = [bob]
   now <- getTime
   setTime (addRelTime now (days 1))
-  (_, outcome) <- submit f.creator do
+  (_, outcome) <- submit f.provider do
     exerciseCmd r1 Proposal_Tally with
       ballots = [ballot]; weightSources = f.weights
       expiresAt = addRelTime now (days 2); extraArgs = args
@@ -778,7 +789,7 @@ wrongDaoAndAuthority = script do
       refuses "not a member of this DAO" wrong
       opening <- trySubmit f.creator do
         exerciseCmd f.dao DAO_Open with
-          id = "second"; operator = f.creator; actionCid = toInterfaceContractId f.action
+          id = "second"; actionCid = toInterfaceContractId f.action
           effect = V.Signal; rule = plain; votingDays = 1
           sources = Map.insert (memberKey other f.creator "other" f.creator) cid f.weights
       refuses "round targets this DAO" opening

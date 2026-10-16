@@ -25,7 +25,7 @@ castVoteViaMemberCast : Fixtures.Fixture -> ContractId Round -> Party -> V.Vote
   -> Map AuthenticKey Meta.AnyContractId -> Script (ContractId Round, ContractId Ballot)
 castVoteViaMemberCast = Fixtures.roundMemberCast
 
--- | The operator counts the round and reports its outcome.
+-- | The provider counts the round and reports its outcome.
 tallyProposalViaProposalTally : SubmitOptions -> ContractId Round -> [ContractId Ballot]
   -> Map AuthenticKey (ContractId Member) -> Time
   -> Script ([ContractId Executable], V.Outcome)
