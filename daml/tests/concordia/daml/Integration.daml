@@ -465,14 +465,14 @@ actionRefusesEffectsItCannotCarryOut : Script ()
 actionRefusesEffectsItCannotCarryOut = script do
   owner <- allocateParty "effect-owner"
   reshare <- trySubmit owner do
-    createCmd Proposal with
+    createCmd ProposalAction with
       owner; provider = owner; targetLabel = "dao"
       effect = V.SetShares with changes = [(owner, 1)]
       viewers = Set.empty
   refuses "Template precondition violated" reshare
   -- The rules a change would install are checked before it can be proposed.
   badRules <- trySubmit owner do
-    createCmd Proposal with
+    createCmd ProposalAction with
       owner; provider = owner; targetLabel = "dao"
       effect = V.SetRules with rules = V.Settings with rule = plain; votingDays = 0
       viewers = Set.empty
@@ -591,7 +591,7 @@ dissolutionLocksTheDao = script do
     exerciseCmd dissolved DAO_ChangeShares with changes = [(f.bob, 4)]; current = [bob]
   refuses "a dissolving DAO takes no further change" byHand
   nextAction <- submit (actAs [f.owner, f.provider]) do
-    createCmd Proposal with
+    createCmd ProposalAction with
       owner = f.owner; provider = f.provider; targetLabel = "round"
       effect = V.SetPublic with public = True
       viewers = Set.fromList [f.alice, f.bob, f.carol]
@@ -690,7 +690,7 @@ daoChangeOpeningGuards = script do
   f <- open V.Signal plain
   let effect = V.SetPublic with public = True
   action <- submit (actAs [f.owner, f.provider]) do
-    createCmd Proposal with
+    createCmd ProposalAction with
       owner = f.owner; provider = f.provider; targetLabel = "round"
       effect; viewers = Set.fromList [f.alice, f.bob, f.carol]
   otherRule <- trySubmit f.owner do
@@ -701,7 +701,7 @@ daoChangeOpeningGuards = script do
       sources = f.weights
   refuses "DAO changes use the DAO's voting settings" otherRule
   elsewhere <- submit (actAs [f.owner, f.provider]) do
-    createCmd Proposal with
+    createCmd ProposalAction with
       owner = f.owner; provider = f.provider; targetLabel = "elsewhere"
       effect; viewers = Set.fromList [f.alice, f.bob, f.carol]
   wrongTarget <- trySubmit f.owner do

@@ -56,7 +56,7 @@ data Fixture = Fixture
     -- Who each registered weight belongs to, so a script can hand a voter
     -- their own weight contract as the voter would.
     holders : [(Party, AuthenticKey)]
-    action : ContractId Proposal
+    action : ContractId ProposalAction
     round : ContractId Round
     closesAt : Time
 
@@ -81,7 +81,7 @@ open effect rule = do
   let weights = [(memberKey provider owner "round" m.party, cid) | (cid, m) <- registered]
       holders = [(m.party, memberKey provider owner "round" m.party) | (_, m) <- registered]
   action <- submit (actAs [owner, provider]) do
-    createCmd Proposal with
+    createCmd ProposalAction with
       owner; provider
       -- A DAO change names the DAO; anything else names its Target.
       targetLabel = if V.changesDao effect then "round" else "dao"

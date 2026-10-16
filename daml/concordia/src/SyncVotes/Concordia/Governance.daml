@@ -1,5 +1,5 @@
 -- SPDX-License-Identifier: MIT
--- DAO founding and authority-bound execution. DAO_Open checks Proposal,
+-- DAO founding and authority-bound execution. DAO_Open checks ProposalAction,
 -- while ProposalExecution exercises DAO_Apply, so these templates share a module.
 module SyncVotes.Concordia.Governance where
 
@@ -28,7 +28,7 @@ import SyncVotes.Concordia.Target (Target, executable, carries, actionBinds, set
 import qualified SyncVotes.Concordia.Types as V
 
 -- A proposed effect carries the DAO authority into its authorized execution.
-template Proposal
+template ProposalAction
   with
     owner : Party
     provider : Party
@@ -45,7 +45,7 @@ template Proposal
       V.Choose options _ -> V.validOptions options
       _ -> True
 
-    interface instance Action for Proposal where
+    interface instance Action for ProposalAction where
       view = ActionView with
         authorizers = [[owner]]
         binds = actionBinds provider owner targetLabel effect
@@ -241,7 +241,7 @@ template DAO
         require "the action is supported" (executable effect)
         require "DAO changes use the DAO's voting settings"
           (not (V.changesDao effect) || (V.Settings with rule; votingDays) == rules)
-        action <- fetch (coerceContractId actionCid : ContractId Proposal)
+        action <- fetch (coerceContractId actionCid : ContractId ProposalAction)
         require "the action belongs to this DAO and matches its effect"
           (action.owner == creator && action.provider == provider
             && action.effect == effect
