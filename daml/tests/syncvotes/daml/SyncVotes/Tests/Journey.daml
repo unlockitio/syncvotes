@@ -1,4 +1,4 @@
--- | Start here for the connected ledger journey. The focused modules cover refusals and edges.
+-- | Connected ledger journey; focused modules cover refusals and edges.
 module SyncVotes.Tests.Journey where
 
 import Daml.Script
@@ -9,9 +9,19 @@ import SyncVotes.Governance (DAO (..), DAO_Execute (..), DAO_BeginDissolving (..
 import qualified SyncVotes.Tests.Fixtures as Fixtures
 import SyncVotes.Types (Effect (..), Vote (..), Outcome (..))
 
--- | One DAO's story, from accounts and founding to provider settlement and retirement.
-journey : Script ()
-journey = script do
+-- | The DAO a journey starts from: its parties, the DAO itself and the two founding memberships.
+data Started = Started with
+    provider : Party
+    founder : Party
+    joiner : Party
+    newcomer : Party
+    dao : ContractId DAO
+    founderMember : ContractId Member
+    joinerMember : ContractId Member
+
+-- | Set up a DAO under the given id, with its two existing voting members.
+setup : Text -> Script Started
+setup daoId = do
   provider <- allocateParty "provider"
   (founder, account) <- Fixtures.onboard provider "founder"
   (joiner, _) <- Fixtures.onboard provider "joiner"
@@ -25,7 +35,7 @@ journey = script do
   Fixtures.assertEquals "profile name" "Founder" identity.name
   dao <- submit founder do
     exerciseCmd account Account_CreateDAO with
-      id = "journey"; daoName = "Common Ground"; description = "Our shared DAO"
+      id = daoId; daoName = "Common Ground"; description = "Our shared DAO"
       image = None; equal = False; rules = Fixtures.openSettings
       decisions = Fixtures.openSettings; shares = [(founder, 3), (joiner, 2)]
       more = []; actorPays = False; public = True; featuredAppRight = None
@@ -37,23 +47,31 @@ journey = script do
   (joinerMember, joinerRecord) <- Fixtures.assertSingleResult "joiner membership" =<< query @Member joiner
   Fixtures.assertEquals "founder share" 3 founderRecord.share
   Fixtures.assertEquals "joiner share" 2 joinerRecord.share
+  pure Started with provider; founder; joiner; newcomer; dao; founderMember; joinerMember
 
-  -- A founder proposes admitting a third member and changing the existing shares.
+-- | Propose from an explicitly supplied live DAO and member, against the electorate given.
+proposeShares : Party -> Party -> ContractId DAO -> ContractId Member -> [(Party, Int)] -> Int -> Script (ContractId Proposal, Proposal)
+proposeShares provider founder dao founderMember changes eligible = do
   shares <- submit founder do
     exerciseCmd founderMember Member_Propose with
       dao; pid = "shares"; title = "Welcome a newcomer"; description = "Reshare the vote"
-      action = SetShares [(founder, 2), (joiner, 2), (newcomer, 3)]
+      action = SetShares changes
       rule = None; votingDays = None; featuredAppRight = None
   proposed <- Fixtures.assertLiveContract "share proposal" provider shares
-  Fixtures.assertEquals "share proposal electorate" 5 proposed.eligible
+  Fixtures.assertEquals "share proposal electorate" eligible proposed.eligible
   Fixtures.assertEquals "share proposal outcome" None proposed.outcome
+  pure (shares, proposed)
+
+-- | Comment and cast both generations of ballots using the supplied proposal and live members.
+voteShares : Party -> Party -> Party -> ContractId Member -> ContractId Member -> Proposal -> Text -> Script (ContractId Ballot, ContractId BallotV2)
+voteShares provider founder joiner founderMember joinerMember proposed daoId = do
   comment <- submit joiner do
     exerciseCmd joinerMember Member_Comment with
       proposalId = proposed.id; cid = "welcome"; body = "Welcome aboard"
   said <- Fixtures.assertLiveContract "joiner comment" joiner comment
   Fixtures.assertEquals "comment author" joiner said.author
   Fixtures.assertEquals "comment proposal" proposed.id said.proposalId
-  Fixtures.assertEquals "comment DAO" founded.id said.daoId
+  Fixtures.assertEquals "comment DAO" daoId said.daoId
 
   -- Both generations of ballot count on the same proposal, from different members.
   oldBallot <- submit founder do
@@ -70,6 +88,11 @@ journey = script do
   Fixtures.assertEquals "modern ballot weight" 2 newVote.weight
   Fixtures.assertCondition "legacy ballot uncounted" (not oldVote.counted)
   Fixtures.assertCondition "modern ballot uncounted" (not newVote.counted)
+  pure (oldBallot, newBallot)
+
+-- | Settle the explicitly supplied proposal after its deadline and check both counted ballots.
+tallyShares : Party -> ContractId Proposal -> Proposal -> ContractId Ballot -> ContractId BallotV2 -> Script (ContractId Proposal)
+tallyShares provider shares proposed oldBallot newBallot = do
   setTime (addRelTime proposed.closesAt (days 1))
   passed <- submit provider do
     exerciseCmd shares Proposal_Tally with ballots = [oldBallot]; final = True; cast = Some [newBallot]
@@ -83,7 +106,11 @@ journey = script do
   v2 <- Fixtures.assertLiveContract "counted modern ballot" provider countedV2
   Fixtures.assertCondition "legacy ballot counted" v1.counted
   Fixtures.assertCondition "modern ballot counted" v2.counted
+  pure passed
 
+-- | Carry out the short share change and check its intermediate and final state.
+applyShares : Party -> Party -> Party -> Party -> ContractId DAO -> ContractId Proposal -> Script (ContractId DAO, ContractId Member)
+applyShares provider founder joiner newcomer dao passed = do
   -- Execution replaces the DAO and memberships; the next batch consumes the advanced proposal.
   (currentFounder, _) <- Fixtures.assertSingleMatching "current founder membership" (\(_, m) -> m.party == founder) =<< query @Member founder
   (currentJoiner, _) <- Fixtures.assertSingleResult "current joiner membership" =<< query @Member joiner
@@ -113,13 +140,17 @@ journey = script do
   Fixtures.assertCondition "share proposal replaced" (finishedShares /= progressId)
   Fixtures.assertEquals "finished share batches" 3 finished.executed
   Fixtures.assertCondition "finished share execution time recorded" (finished.executedAt /= None)
+  pure (expandedDao, newMember)
 
+-- | Keep provider billing statements separate from governance execution.
+bill : Party -> Party -> Text -> Script (ContractId Meter)
+bill provider founder daoId = do
   -- The provider records statements about this DAO and founder; these are bookkeeping records,
   -- not transfers, and the ledger does not calculate charges from governance transactions.
   now <- getTime
   meter <- submit provider do
     createCmd Meter with
-      provider; daoId = expanded.id; credited = 10.0; charged = 0.0; updatedAt = now
+      provider; daoId; credited = 10.0; charged = 0.0; updatedAt = now
   purse <- submit provider do
     createCmd Purse with
       provider; fingerprint = "founder-key"; party = Some founder
@@ -133,11 +164,15 @@ journey = script do
   Fixtures.assertArchivedContract "original purse" provider purse
   daoStatement <- Fixtures.assertLiveContract "DAO meter" provider nextMeter
   personalStatement <- Fixtures.assertLiveContract "founder purse" provider nextPurse
-  Fixtures.assertEquals "meter DAO" expanded.id daoStatement.daoId
+  Fixtures.assertEquals "meter DAO" daoId daoStatement.daoId
   Fixtures.assertEquals "meter balance" 9.0 (daoStatement.credited - daoStatement.charged)
   Fixtures.assertEquals "purse party" (Some founder) personalStatement.party
   Fixtures.assertEquals "purse balance" 4.5 (personalStatement.credited - personalStatement.charged)
+  pure nextMeter
 
+-- | Retire the reshared DAO after a fresh vote by its three members.
+retire : Party -> Party -> Party -> Party -> ContractId DAO -> ContractId Member -> ContractId Meter -> Text -> Script ()
+retire provider founder joiner newcomer expandedDao newMember nextMeter daoId = do
   -- Dissolution needs a new proposal after the share change: ballots cast before resharing
   -- cannot count for a proposal opened against the new electorate.
   (resharedFounder, _) <- Fixtures.assertSingleMatching "reshared founder membership" (\(_, m) -> m.party == founder) =<< query @Member founder
@@ -189,4 +224,103 @@ journey = script do
   (orphan, survivingMember) <- Fixtures.assertSingleResult "surviving newcomer membership" =<< query @Member newcomer
   _ <- Fixtures.assertLiveContract "surviving meter" provider nextMeter
   Fixtures.assertCondition "newcomer membership replaced" (orphan /= newMember)
-  Fixtures.assertEquals "surviving membership DAO" "journey" survivingMember.daoId
+  Fixtures.assertEquals "surviving membership DAO" daoId survivingMember.daoId
+
+-- | Execute a 401-entry change in three bounded batches without querying every membership.
+largeApply : Script ()
+largeApply = script do
+  provider <- allocateParty "bulk-provider"
+  (founder, account) <- Fixtures.onboard provider "bulk-founder"
+  members <- mapA (\i -> Fixtures.onboard provider ("bulk-" <> show i)) [0 .. 400]
+  dao <- submit founder do
+    exerciseCmd account Account_CreateDAO with
+      id = "bulk"; daoName = "Bulk DAO"; description = ""; image = None
+      equal = False; rules = Fixtures.openSettings; decisions = Fixtures.openSettings
+      shares = [(founder, 1)]; more = []; actorPays = False; public = True
+      featuredAppRight = None
+  (founderMember, _) <- Fixtures.assertSingleResult "bulk founder membership" =<< query @Member founder
+  let changes = map (\(p, _) -> (p, 1)) members
+      at i = case drop i members of
+        (p, _) :: _ -> Fixtures.assertPresent ("bulk party at " <> show i) (Some p)
+        [] -> Fixtures.assertPresent ("bulk party at " <> show i) None
+      spot i = do
+        party <- at i
+        (cid, m) <- Fixtures.assertSingleResult ("bulk membership " <> show i) =<< query @Member party
+        Fixtures.assertEquals ("bulk party " <> show i) party m.party
+        Fixtures.assertEquals ("bulk units " <> show i) 1 m.share
+        Fixtures.assertEquals ("bulk DAO " <> show i) "bulk" m.daoId
+        pure cid
+      progress label = do
+        (cid, p) <- Fixtures.assertSingleMatching label (\(_, p) -> p.id == "shares") =<< query @Proposal provider
+        pure (cid, p)
+      execute currentDao currentProposal upTo = do
+        result <- submit provider do
+          exerciseCmd currentDao DAO_Execute with
+            proposal = currentProposal; current = []; upTo; featuredAppRight = None
+        Fixtures.assertPresent ("bulk DAO batch " <> show upTo) result
+  (proposal, opened) <- proposeShares provider founder dao founderMember changes 1
+  Fixtures.assertEquals "bulk proposal change count" 401 (length changes)
+  ballot <- submit founder do
+    exerciseCmd founderMember Member_Cast with
+      proposalId = opened.id; closesAt = opened.closesAt; changeable = False
+      vote = Yes; previous = None; previousV1 = None; featuredAppRight = None
+  setTime (addRelTime opened.closesAt (days 1))
+  passed <- submit provider do
+    exerciseCmd proposal Proposal_Tally with ballots = []; final = True; cast = Some [ballot]
+  settled <- Fixtures.assertLiveContract "bulk passed proposal" provider passed
+  Fixtures.assertEquals "bulk vote passed" (Some Passed) settled.outcome
+  Fixtures.refuses provider "A batch is at most a batch" do
+    exerciseCmd dao DAO_Execute with proposal = passed; current = []; upTo = 201; featuredAppRight = None
+  first <- execute dao passed 200
+  firstDao <- Fixtures.assertLiveContract "bulk first DAO" provider first
+  Fixtures.assertEquals "bulk first member count" 201 firstDao.members
+  Fixtures.assertEquals "bulk first unit count" 201 firstDao.units
+  (progress200, p200) <- progress "bulk first progress"
+  Fixtures.assertEquals "bulk first executed" 200 p200.executed
+  Fixtures.assertEquals "bulk first executedAt" None p200.executedAt
+  _ <- spot 0
+  _ <- spot 199
+  second <- execute first progress200 400
+  secondDao <- Fixtures.assertLiveContract "bulk second DAO" provider second
+  Fixtures.assertEquals "bulk second member count" 401 secondDao.members
+  Fixtures.assertEquals "bulk second unit count" 401 secondDao.units
+  (progress400, p400) <- progress "bulk second progress"
+  Fixtures.assertEquals "bulk second executed" 400 p400.executed
+  Fixtures.assertEquals "bulk second executedAt" None p400.executedAt
+  _ <- spot 200
+  _ <- spot 399
+  last <- execute second progress400 401
+  finalDao <- Fixtures.assertLiveContract "bulk final DAO" provider last
+  Fixtures.assertEquals "bulk final member count" 402 finalDao.members
+  Fixtures.assertEquals "bulk final unit count" 402 finalDao.units
+  (progress401, p401) <- progress "bulk final progress"
+  Fixtures.assertEquals "bulk final executed" 401 p401.executed
+  Fixtures.assertCondition "bulk final executedAt" (p401.executedAt /= None)
+  _ <- spot 400
+  Fixtures.refuses provider "The batch must move on" do
+    exerciseCmd last DAO_Execute with proposal = progress401; current = []; upTo = 401; featuredAppRight = None
+
+-- | A proposal sub-journey establishes its own pre-existing DAO and live member.
+proposalJourney : Script ()
+proposalJourney = script do
+  s <- setup "proposal-journey"
+  (proposal, record) <- proposeShares s.provider s.founder s.dao s.founderMember
+    [(s.founder, 2), (s.joiner, 2), (s.newcomer, 3)] 5
+  Fixtures.assertEquals "proposal starts from existing member" s.founder record.proposer
+  _ <- Fixtures.assertLiveContract "proposal journey DAO" s.provider s.dao
+  _ <- Fixtures.assertLiveContract "proposal journey member" s.founder s.founderMember
+  _ <- Fixtures.assertLiveContract "proposal journey proposal" s.provider proposal
+  pure ()
+
+-- | The full story composes stages on one ledger, passing each stage's explicit handles.
+journey : Script ()
+journey = script do
+  s <- setup "journey"
+  (shares, proposed) <- proposeShares s.provider s.founder s.dao s.founderMember
+    [(s.founder, 2), (s.joiner, 2), (s.newcomer, 3)] 5
+  (oldBallot, newBallot) <- voteShares s.provider s.founder s.joiner s.founderMember s.joinerMember proposed "journey"
+  passed <- tallyShares s.provider shares proposed oldBallot newBallot
+  (expandedDao, newMember) <- applyShares s.provider s.founder s.joiner s.newcomer s.dao passed
+  expanded <- Fixtures.assertLiveContract "expanded DAO for billing" s.provider expandedDao
+  meter <- bill s.provider s.founder expanded.id
+  retire s.provider s.founder s.joiner s.newcomer expandedDao newMember meter "journey"
