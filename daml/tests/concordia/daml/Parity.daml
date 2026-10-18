@@ -15,7 +15,8 @@
 -- a direct joint-authority membership change. What it still lacks: SetShares
 -- has no executable at all, so batched vote-gated share changes and their
 -- progress are missing and a Round refuses to propose one; there are no
--- comments, no billing and no activity markers; and a DAO change applied by the
+-- comments and no activity markers, and the provider's billing statements
+-- stand alone without any charging flow; and a DAO change applied by the
 -- DAO's own joint authority is not itself gated on a passed round, as the
 -- original DAO_Execute is not either.
 module Parity where

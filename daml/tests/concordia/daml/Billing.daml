@@ -1,0 +1,156 @@
+-- SPDX-License-Identifier: MIT
+-- Statements record the provider's figures rather than holding coin; only that
+-- provider may rewrite or archive one, and a rewrite consumes the old
+-- statement. Billing stands on its own here: no governance flow in this package
+-- creates, charges or reads a statement, so these scripts drive the templates
+-- directly rather than through a DAO journey.
+module Billing where
+
+import Daml.Script
+import DA.Time (addRelTime, days)
+import SyncVotes.Concordia.Billing
+  (Meter (..), Meter_Update (..), Purse (..), Purse_Update (..))
+import Fixtures (refuses)
+
+-- | The live statement a script reads, with the handle it was read from.
+assertLiveMeter : Text -> Party -> ContractId Meter -> Script Meter
+assertLiveMeter label reader cid = do
+  found <- queryContractId reader cid
+  case found of
+    Some meter -> pure meter
+    None -> abort ("expected a live meter: " <> label)
+
+assertLivePurse : Text -> Party -> ContractId Purse -> Script Purse
+assertLivePurse label reader cid = do
+  found <- queryContractId reader cid
+  case found of
+    Some purse -> pure purse
+    None -> abort ("expected a live purse: " <> label)
+
+-- | The handle is gone from the reader's view, which is what a consumed or
+-- archived statement looks like to that reader.
+assertArchivedMeter : Text -> Party -> ContractId Meter -> Script ()
+assertArchivedMeter label reader cid = do
+  found <- queryContractId reader cid
+  case found of
+    None -> pure ()
+    Some _ -> abort ("expected an archived meter: " <> label)
+
+assertArchivedPurse : Text -> Party -> ContractId Purse -> Script ()
+assertArchivedPurse label reader cid = do
+  found <- queryContractId reader cid
+  case found of
+    None -> pure ()
+    Some _ -> abort ("expected an archived purse: " <> label)
+
+assertEquals : (Eq a, Show a) => Text -> a -> a -> Script ()
+assertEquals label expected actual =
+  if expected == actual then pure ()
+  else abort (label <> ": expected " <> show expected <> ", got " <> show actual)
+
+assertCount : Text -> Int -> [a] -> Script ()
+assertCount label expected results = assertEquals label expected (length results)
+
+-- | A provider update replaces each statement, keeps the identifying memo and
+-- records the new amounts against the time of the rewrite.
+providerUpdatesReplaceStatements : Script ()
+providerUpdatesReplaceStatements = script do
+  provider <- allocateParty "billing-provider"
+  customer <- allocateParty "billing-customer"
+  now <- getTime
+  meter <- submit provider do
+    createCmd Meter with
+      provider; daoId = "dao"; credited = 0.0; charged = 0.0; updatedAt = now
+  purse <- submit provider do
+    createCmd Purse with
+      provider; fingerprint = "fingerprint"; party = None
+      credited = 0.0; charged = 0.0; updatedAt = now
+  setTime (addRelTime now (days 1))
+  nextMeter <- submit provider do
+    exerciseCmd meter Meter_Update with newCredited = 10.25; newCharged = 1.5
+  nextPurse <- submit provider do
+    exerciseCmd purse Purse_Update with
+      newParty = Some customer; newCredited = 5.0; newCharged = 0.75
+  -- The rewrite consumes the statement it replaces.
+  assertArchivedMeter "replaced meter" provider meter
+  assertArchivedPurse "replaced purse" provider purse
+  m <- assertLiveMeter "updated meter" provider nextMeter
+  p <- assertLivePurse "updated purse" provider nextPurse
+  assertEquals "meter DAO" "dao" m.daoId
+  assertEquals "meter provider" provider m.provider
+  assertEquals "meter credit" 10.25 m.credited
+  assertEquals "meter charge" 1.5 m.charged
+  assertEquals "meter balance" 8.75 (m.credited - m.charged)
+  assertEquals "meter update time" (addRelTime now (days 1)) m.updatedAt
+  assertEquals "purse fingerprint" "fingerprint" p.fingerprint
+  assertEquals "purse party" (Some customer) p.party
+  assertEquals "purse provider" provider p.provider
+  assertEquals "purse balance" 4.25 (p.credited - p.charged)
+  assertEquals "purse update time" (addRelTime now (days 1)) p.updatedAt
+  -- A later update changes the amounts and the named party, not the memo.
+  finalPurse <- submit provider do
+    exerciseCmd nextPurse Purse_Update with
+      newParty = None; newCredited = 7.0; newCharged = 2.0
+  assertArchivedPurse "previous purse" provider nextPurse
+  final <- assertLivePurse "final purse" provider finalPurse
+  assertEquals "final purse party" None final.party
+  assertEquals "final purse fingerprint" "fingerprint" final.fingerprint
+  assertEquals "final purse balance" 5.0 (final.credited - final.charged)
+  assertCount "remaining meters" 1 =<< query @Meter provider
+  assertCount "remaining purses" 1 =<< query @Purse provider
+
+-- | The statement is the provider's alone: neither a stranger nor the party
+-- named in a purse may rewrite it.
+nonProviderUpdateRefused : Script ()
+nonProviderUpdateRefused = script do
+  provider <- allocateParty "refusal-provider"
+  customer <- allocateParty "refusal-customer"
+  stranger <- allocateParty "refusal-stranger"
+  now <- getTime
+  meter <- submit provider do
+    createCmd Meter with
+      provider; daoId = "dao"; credited = 1.0; charged = 0.0; updatedAt = now
+  -- The purse names the customer, which still does not make them its controller.
+  purse <- submit provider do
+    createCmd Purse with
+      provider; fingerprint = "fingerprint"; party = Some customer
+      credited = 1.0; charged = 0.0; updatedAt = now
+  trySubmit (actAs customer <> readAs provider) (do
+    exerciseCmd purse Purse_Update with
+      newParty = Some customer; newCredited = 5.0; newCharged = 0.5)
+    >>= refuses "requires authorizers"
+  trySubmit (actAs stranger <> readAs provider) (do
+    exerciseCmd meter Meter_Update with newCredited = 10.0; newCharged = 1.0)
+    >>= refuses "requires authorizers"
+  -- Both refusals leave the original statements untouched.
+  m <- assertLiveMeter "meter after refusal" provider meter
+  p <- assertLivePurse "purse after refusal" provider purse
+  assertEquals "meter credit unchanged" 1.0 m.credited
+  assertEquals "meter charge unchanged" 0.0 m.charged
+  assertEquals "purse credit unchanged" 1.0 p.credited
+  assertEquals "purse party unchanged" (Some customer) p.party
+
+-- | Archival is the provider's alone, and leaves no statements behind.
+providerOnlyArchivesStatements : Script ()
+providerOnlyArchivesStatements = script do
+  provider <- allocateParty "archive-provider"
+  customer <- allocateParty "archive-customer"
+  now <- getTime
+  meter <- submit provider do
+    createCmd Meter with
+      provider; daoId = "dao"; credited = 5.0; charged = 1.0; updatedAt = now
+  purse <- submit provider do
+    createCmd Purse with
+      provider; fingerprint = "customer"; party = Some customer
+      credited = 7.0; charged = 2.0; updatedAt = now
+  m <- assertLiveMeter "meter" provider meter
+  assertEquals "meter balance" 4.0 (m.credited - m.charged)
+  trySubmit (actAs customer <> readAs provider) (do
+    exerciseCmd purse Archive) >>= refuses "requires authorizers"
+  _ <- assertLivePurse "purse survives a refused archival" provider purse
+  submit provider do exerciseCmd meter Archive
+  submit provider do exerciseCmd purse Archive
+  assertArchivedMeter "meter" provider meter
+  assertArchivedPurse "purse" provider purse
+  assertCount "remaining meters" 0 =<< query @Meter provider
+  assertCount "remaining purses" 0 =<< query @Purse provider
