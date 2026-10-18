@@ -1,0 +1,159 @@
+-- SPDX-License-Identifier: MIT
+-- Connected ledger journey over the flow this package actually supports today;
+-- the focused modules keep the refusals and edges. Stages take their handles as
+-- real arguments and return the handles the next stage needs, so each standalone
+-- script below starts from its own fixture: no ledger state is shared between
+-- independent Daml scripts.
+--
+-- What the stages here exercise is the current serial round: the client creates
+-- the ProposalAction under creator and provider authority, DAO_Open freezes the
+-- electorate, every vote goes through Round.Member_Cast and threads the returned
+-- round contract id to the next voter, the provider resolves with Proposal_Tally
+-- and the creator carries the decision out through Executable_Execute. The
+-- separate SyncVotes.Concordia.Ballot template is an unswitched parallel-ballot
+-- feasibility proof and takes no part in the DAO_Open flow used here.
+module Journey where
+
+import Prelude hiding (Action)
+import Daml.Script
+import DA.Time (addRelTime, days)
+import qualified DA.Map as Map
+
+import Cap.Core.Types (AuthenticKey)
+import Cap.Governance.ExecutableV1 (Executable)
+import SyncVotes.Concordia.Governance (DAO (..))
+import SyncVotes.Concordia.Round (Round, Ballot)
+import qualified Splice.Api.Token.MetadataV1 as Meta
+import qualified SyncVotes.Concordia.Types as V
+import Fixtures (Fixture, plain)
+import qualified Fixtures
+import SyncVotesVocabulary
+  (carryOutDecisionViaExecutableExecute, castVoteViaMemberCast,
+   singleOutcomeToCarryOut, tallyProposalViaProposalTally)
+
+-- | The live DAO a journey stage reads, with the handle it was read from.
+assertLiveDao : Text -> Party -> ContractId DAO -> Script DAO
+assertLiveDao label reader cid = do
+  found <- queryContractId reader cid
+  case found of
+    Some dao -> pure dao
+    None -> abort ("expected a live DAO: " <> label)
+
+-- | The DAO handle is gone from the reader's view, which is what an archived
+-- predecessor looks like to that reader.
+assertArchivedDao : Text -> Party -> ContractId DAO -> Script ()
+assertArchivedDao label reader cid = do
+  found <- queryContractId reader cid
+  case found of
+    None -> pure ()
+    Some _ -> abort ("expected an archived DAO: " <> label)
+
+assertEquals : (Eq a, Show a) => Text -> a -> a -> Script ()
+assertEquals label expected actual =
+  if expected == actual then pure ()
+  else abort (label <> ": expected " <> show expected <> ", got " <> show actual)
+
+-- | A DAO founded through Account_CreateDAO, with the round already opened over
+-- the given effect: the client-created ProposalAction and the frozen electorate
+-- are both explicit handles on the fixture.
+setup : V.Effect -> Script Fixture
+setup effect = do
+  f <- Fixtures.open effect plain
+  founded <- assertLiveDao "founded DAO" f.provider f.dao
+  assertEquals "DAO creator" f.creator founded.creator
+  assertEquals "DAO members" 3 founded.members
+  assertEquals "DAO units" 10 founded.units
+  assertEquals "DAO starts private" False founded.public
+  assertEquals "DAO is not dissolving" None founded.dissolving
+  pure f
+
+-- | Two of the three registered members vote yes, each from the round contract
+-- id the previous cast returned, which is how the current serial round threads.
+voteYes : Fixture -> Map.Map AuthenticKey Meta.AnyContractId
+  -> Script (ContractId Round, [ContractId Ballot])
+voteYes f targets = do
+  (afterAlice, aliceBallot) <- castVoteViaMemberCast f f.round f.alice V.Yes targets
+  (afterBob, bobBallot) <- castVoteViaMemberCast f afterAlice f.bob V.Yes targets
+  pure (afterBob, [aliceBallot, bobBallot])
+
+-- | The provider resolves the supplied round after close and reports the single
+-- thing the authorization left to carry out.
+resolve : Fixture -> ContractId Round -> [ContractId Ballot] -> V.Outcome
+  -> Script (ContractId Executable)
+resolve f round ballots expected = do
+  now <- getTime
+  setTime (addRelTime now (days 1))
+  (executions, outcome) <- tallyProposalViaProposalTally (actAs f.provider) round
+    ballots f.weights (addRelTime now (days 2))
+  assertEquals "round outcome" expected outcome
+  singleOutcomeToCarryOut "expected one executable for a passed DAO change" executions
+
+-- | The creator carries out the decided change against the pinned DAO and
+-- returns the DAO contract the execution created.
+carryOut : Fixture -> ContractId Executable
+  -> Map.Map AuthenticKey Meta.AnyContractId -> Script (ContractId DAO)
+carryOut f executable targets = do
+  result <- carryOutDecisionViaExecutableExecute (actAs [f.creator, f.provider])
+    executable [f.creator] targets
+  case result.created of
+    [created] -> pure (coerceContractId created)
+    _ -> abort "expected exactly one DAO from a carried-out change"
+
+-- | A proposal sub-journey: an existing DAO with its frozen electorate and the
+-- client-created action, before any ballot is cast.
+proposalJourney : Script ()
+proposalJourney = script do
+  f <- setup (V.SetPublic with public = True)
+  _ <- assertLiveDao "proposal journey DAO" f.provider f.dao
+  opened <- queryContractId f.creator f.round
+  case opened of
+    None -> abort "expected the opened round to be live"
+    Some _ -> pure ()
+  action <- queryContractId f.creator f.action
+  case action of
+    None -> abort "expected the client-created action to be live"
+    Some a -> do
+      assertEquals "action creator" f.creator a.creator
+      assertEquals "action provider" f.provider a.provider
+      assertEquals "action effect" (V.SetPublic with public = True) a.effect
+  assertEquals "every registered weight is frozen at opening" 3 (Map.size f.weights)
+
+-- | A resolution sub-journey: votes and resolution over its own fixture,
+-- stopping at the authorized executable without carrying it out.
+resolutionJourney : Script ()
+resolutionJourney = script do
+  f <- setup (V.SetPublic with public = True)
+  let targets = Fixtures.daoPins f f.dao
+  (settledRound, ballots) <- voteYes f targets
+  _ <- resolve f settledRound ballots V.Passed
+  -- Resolution alone changes nothing: the DAO keeps its opening state until the
+  -- authorized executable is carried out.
+  unchanged <- assertLiveDao "DAO before execution" f.provider f.dao
+  assertEquals "DAO still private before execution" False unchanged.public
+  -- Resolving consumes the round it counted.
+  consumed <- queryContractId f.creator settledRound
+  case consumed of
+    None -> pure ()
+    Some _ -> abort "expected the resolved round to be consumed"
+
+-- | The full story composes the stages on one ledger, passing each stage's
+-- explicit handles, and ends on the carried-out DAO state.
+journey : Script ()
+journey = script do
+  f <- setup (V.SetPublic with public = True)
+  let targets = Fixtures.daoPins f f.dao
+  (settledRound, ballots) <- voteYes f targets
+  executable <- resolve f settledRound ballots V.Passed
+  updatedDao <- carryOut f executable targets
+  updated <- assertLiveDao "carried-out DAO" f.provider updatedDao
+  assertEquals "the voted change is public" True updated.public
+  assertEquals "members survive the change" 3 updated.members
+  assertEquals "units survive the change" 10 updated.units
+  assertEquals "the DAO keeps its creator" f.creator updated.creator
+  -- Executing the change replaces the DAO contract the round was pinned to.
+  assertArchivedDao "pinned DAO predecessor" f.provider f.dao
+  -- The round is consumed by its own resolution.
+  consumedRound <- queryContractId f.creator settledRound
+  case consumedRound of
+    None -> pure ()
+    Some _ -> abort "expected the resolved round to be consumed"
