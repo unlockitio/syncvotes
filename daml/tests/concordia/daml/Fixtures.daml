@@ -13,6 +13,7 @@ import Splice.Api.Token.MetadataV1 hiding (AnyContractId)
 import qualified Splice.Api.Token.MetadataV1 as Meta
 import Cap.Core.Types (AuthenticKey (..))
 import Cap.Governance.ExecutableV1 (Executable, Executable_Execute (..), Executable_ExecuteResult)
+import SyncVotes.Concordia.Account
 import SyncVotes.Concordia.Governance
 import SyncVotes.Concordia.Keys (daoKey, targetKey, memberKey)
 import SyncVotes.Concordia.Target (Target (..))

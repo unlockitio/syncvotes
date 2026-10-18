@@ -4,7 +4,8 @@
 module SyncVotes.Concordia.Consent where
 
 import Splice.Util (fetchChecked, require)
-import SyncVotes.Concordia.Governance (Account (..), Account_CreateDAO (..), DAO (..), DAO_ChangeShares (..))
+import SyncVotes.Concordia.Account (Account (..), Account_CreateDAO (..))
+import SyncVotes.Concordia.Governance (DAO (..), DAO_ChangeShares (..))
 import SyncVotes.Concordia.Keys (memberKey)
 import SyncVotes.Concordia.Member (Member (..))
 import qualified SyncVotes.Concordia.Types as V

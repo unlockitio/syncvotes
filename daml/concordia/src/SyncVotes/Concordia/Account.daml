@@ -1,0 +1,43 @@
+-- SPDX-License-Identifier: MIT
+-- A party's standing with the app: the door through which it founds DAOs.
+module SyncVotes.Concordia.Account where
+
+import Splice.Util (require)
+import SyncVotes.Concordia.Governance (DAO (..))
+import SyncVotes.Concordia.Member (Member (..))
+import qualified SyncVotes.Concordia.Types as V
+
+-- Founding requires a positive member table and carries provider authority.
+template Account
+  with
+    provider : Party
+    user : Party
+  where
+    signatory provider
+    observer user
+
+    nonconsuming choice Account_CreateDAO : ContractId DAO
+      with
+        daoId : Text
+        name : Text
+        description : Text
+        image : Optional Text
+        equal : Bool
+        rules : V.Settings
+        decisions : V.Settings
+        shares : [(Party, Int)]
+      controller user
+      do
+        require "valid founding information" (V.validInfo name description image)
+        require "valid founding settings" (V.validSettings rules && V.validSettings decisions)
+        require "valid founding shares" (V.validChanges equal shares
+          && length shares <= V.batch && all (\(_, units) -> units > 0) shares
+          && user `elem` map fst shares)
+        now <- getTime
+        forA shares (\(party, share) -> create Member with
+          provider; creator = user; daoId; party; since = now; share
+          shareSince = now)
+        create DAO with
+           provider; creator = user; daoId; name; description; image; equal
+           rules; decisions; members = length shares; units = sum (map snd shares)
+           public = False; dissolving = None; createdAt = now

@@ -6,6 +6,7 @@ module Consent where
 import Daml.Script
 import DA.Time (addRelTime, days)
 import SyncVotes.Concordia.Consent
+import SyncVotes.Concordia.Account
 import SyncVotes.Concordia.Governance
 import SyncVotes.Concordia.Member (Member (..))
 import qualified SyncVotes.Concordia.Types as V

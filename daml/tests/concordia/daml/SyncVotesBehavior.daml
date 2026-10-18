@@ -6,6 +6,7 @@
 module SyncVotesBehavior where
 
 import Daml.Script
+import SyncVotes.Concordia.Account
 import SyncVotes.Concordia.Governance
 import SyncVotes.Concordia.Member (Member (..))
 import qualified SyncVotes.Concordia.Types as V

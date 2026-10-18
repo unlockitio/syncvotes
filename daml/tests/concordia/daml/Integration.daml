@@ -14,6 +14,7 @@ import Cap.Governance.Utils (weighBallots)
 import DA.Time (addRelTime, days, seconds)
 
 import Cap.Governance.ExecutableV1 (Executable_Execute (..))
+import SyncVotes.Concordia.Account
 import SyncVotes.Concordia.Governance
 import SyncVotes.Concordia.Keys (daoKey, memberKey, targetKey, procedureName)
 import Cap.Core.Types (Mechanism (..))
