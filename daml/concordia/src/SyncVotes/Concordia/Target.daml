@@ -13,6 +13,7 @@ import Cap.Core.Utils (signedKey)
 import Cap.Governance.Types (Bind (..))
 import Cap.Governance.Utils (HasState (..), checkTarget)
 import SyncVotes.Concordia.Keys
+import qualified SyncVotes.Concordia.Rules as R
 import qualified SyncVotes.Concordia.Types as V
 
 template Target
@@ -52,7 +53,7 @@ carries effect value = case (effect, value) of
 actionBinds : Party -> Party -> Text -> V.Effect -> Map AuthenticKey Bind
 actionBinds provider creator label effect = case effect of
   V.Signal -> Map.empty
-  _ | V.changesDao effect ->
+  _ | R.changesDao effect ->
         Map.singleton (daoKey provider creator label) (Bind with state = None; cid = None)
   _ -> Map.singleton (targetKey creator label) (Bind with state = None; cid = None)
 

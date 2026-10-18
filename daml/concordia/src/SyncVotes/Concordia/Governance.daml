@@ -25,6 +25,7 @@ import SyncVotes.Concordia.Keys (daoKey, targetKey)
 import SyncVotes.Concordia.Member (Member (..), Member_Remove (..), Member_Reshare (..))
 import SyncVotes.Concordia.Round (Round (..))
 import SyncVotes.Concordia.Target (Target, executable, carries, actionBinds, setInfo, index)
+import qualified SyncVotes.Concordia.Rules as R
 import qualified SyncVotes.Concordia.Types as V
 
 -- A proposed effect carries the DAO authority into its authorized execution.
@@ -39,10 +40,10 @@ template ProposalAction
     signatory creator, provider
     observer Set.toList viewers
     ensure executable effect && case effect of
-      V.SetRules rules -> V.validSettings rules
-      V.SetSettings rules decisions -> V.validSettings rules && V.validSettings decisions
-      V.SetInfo name description image -> V.validInfo name description image
-      V.Choose options _ -> V.validOptions options
+      V.SetRules rules -> R.validSettings rules
+      V.SetSettings rules decisions -> R.validSettings rules && R.validSettings decisions
+      V.SetInfo name description image -> R.validInfo name description image
+      V.Choose options _ -> R.validOptions options
       _ -> True
 
     interface instance Action for ProposalAction where
@@ -99,7 +100,7 @@ template ProposalExecution
               _ -> abort "the authorized outcome is not a choice"
             chosen <- forA picks (\i -> orAbort "no such option" (index i options))
             setInfo (targetKey creator targetLabel) binds targets (T.intercalate ", " chosen)
-          _ | V.changesDao effect -> do
+          _ | R.changesDao effect -> do
                 (cid, _) <- checkTarget @DAO (==) (daoKey provider creator targetLabel) binds targets
                 result <- exercise cid DAO_Apply with effect
                 pure (case result of
@@ -136,7 +137,7 @@ template DAO
       controller provider, creator
       do
         require "a dissolving DAO takes no further change" (dissolving == None)
-        require "valid share changes" (V.validChanges equal changes && length changes <= V.batch)
+        require "valid share changes" (R.validChanges equal changes && length changes <= R.batch)
         require "distinct current members" (dedup current == current)
         existing <- forA current (\cid -> do
           member <- fetch cid
@@ -172,19 +173,19 @@ template DAO
         require "a dissolving DAO takes no further change" (dissolving == None)
         case effect of
           V.SetRules newRules -> do
-            require "valid voting rules" (V.validSettings newRules)
+            require "valid voting rules" (R.validSettings newRules)
             Some <$> create this with rules = newRules
           V.SetPublic newPublic -> Some <$> create this with public = newPublic
           V.SetSettings newRules newDecisions -> do
             require "valid voting settings"
-              (V.validSettings newRules && V.validSettings newDecisions)
+              (R.validSettings newRules && R.validSettings newDecisions)
             Some <$> create this with rules = newRules; decisions = newDecisions
           V.Dissolve -> do
             now <- getTime
             Some <$> create this with dissolving = Some now
           V.SetInfo newName newDescription newImage -> do
             require "valid DAO information"
-              (V.validInfo newName newDescription newImage)
+              (R.validInfo newName newDescription newImage)
             Some <$> create this with
               name = newName; description = newDescription; image = newImage
           _ -> abort "this choice carries out no such DAO effect"
@@ -201,15 +202,15 @@ template DAO
       do
         require "a dissolving DAO opens no round" (dissolving == None)
         require "round targets this DAO" (id == daoId)
-        require "valid voting settings" (V.validSettings (V.Settings with rule; votingDays))
+        require "valid voting settings" (R.validSettings (V.Settings with rule; votingDays))
         require "the action is supported" (executable effect)
         require "DAO changes use the DAO's voting settings"
-          (not (V.changesDao effect) || (V.Settings with rule; votingDays) == rules)
+          (not (R.changesDao effect) || (V.Settings with rule; votingDays) == rules)
         action <- fetch (coerceContractId actionCid : ContractId ProposalAction)
         require "the action belongs to this DAO and matches its effect"
           (action.creator == creator && action.provider == provider
             && action.effect == effect
-            && (not (V.changesDao effect) || action.targetLabel == daoId))
+            && (not (R.changesDao effect) || action.targetLabel == daoId))
         now <- getTime
         registered <- readWeights (Set.fromList (Map.keys sources)) sources
         membersRead <- forA (Map.values sources) fetch

@@ -8,6 +8,7 @@ import SyncVotes.Concordia.Account (Account (..), Account_CreateDAO (..))
 import SyncVotes.Concordia.Governance (DAO (..), DAO_ChangeShares (..))
 import SyncVotes.Concordia.Keys (memberKey)
 import SyncVotes.Concordia.Member (Member (..))
+import qualified SyncVotes.Concordia.Rules as R
 import qualified SyncVotes.Concordia.Types as V
 
 -- The proposal is immutable: a changed term set requires a new contract and
@@ -28,9 +29,9 @@ template FoundingProposal
   where
     signatory provider, creator
     observer map fst shares
-    ensure V.validInfo name description image
-      && V.validSettings rules && V.validSettings decisions
-      && V.validChanges equal shares && length shares <= V.batch
+    ensure R.validInfo name description image
+      && R.validSettings rules && R.validSettings decisions
+      && R.validChanges equal shares && length shares <= R.batch
       && all (\(_, units) -> units > 0) shares
       && creator `elem` map fst shares
 

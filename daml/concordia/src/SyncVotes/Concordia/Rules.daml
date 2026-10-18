@@ -1,0 +1,51 @@
+-- SPDX-License-Identifier: MIT
+-- What the ledger accepts: well-formed rules, options and share changes, and
+-- which proposals change the DAO. Mirrors SyncVotes.Rules ownership.
+module SyncVotes.Concordia.Rules where
+
+import DA.List (dedup)
+import qualified DA.Text as T
+import SyncVotes.Concordia.Types
+
+changesDao : Effect -> Bool
+changesDao Signal = False
+changesDao (Choose {}) = False
+changesDao _ = True
+
+validRule : Rule -> Bool
+validRule r = r.quorum >= 0 && r.quorum <= 100
+  && not (r.early && r.changeable)
+  && case r.threshold of
+    Majority -> True
+    Percent p -> p >= 1 && p <= 100
+    Fraction num den -> num >= 1 && num <= den && den <= 100
+
+validSettings : Settings -> Bool
+validSettings s = validRule s.rule && s.votingDays >= 1 && s.votingDays <= 90
+
+validOptions : [Text] -> Bool
+validOptions options = length options >= 2 && length options <= 10
+  && all (\o -> o /= "" && T.length o <= 80) options
+  && dedup options == options
+
+batch : Int
+batch = 200
+maxChanges : Int
+maxChanges = 2000
+
+validChanges : Bool -> [(Party, Int)] -> Bool
+validChanges equal changes = not (null changes) && length changes <= maxChanges
+  && all (\(_, units) -> units >= 0 && (not equal || units <= 1)) changes
+  && dedup (map fst changes) == map fst changes
+
+validLabel : Int -> Text -> Bool
+validLabel n t = t /= "" && T.length t <= n
+within : Int -> Text -> Bool
+within n t = T.length t <= n
+validImage : Optional Text -> Bool
+validImage None = True
+validImage (Some url) = T.isPrefixOf "https://" (T.asciiToLower url)
+  && T.length url <= 2000 && not (any (`T.isInfixOf` url) [" ", "\n", "\t"])
+validInfo : Text -> Text -> Optional Text -> Bool
+validInfo name description image = validLabel 60 name
+  && within 10000 description && validImage image

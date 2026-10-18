@@ -1,0 +1,73 @@
+-- SPDX-License-Identifier: MIT
+-- How a count decides a proposal, apart from the contracts it is kept on: pure
+-- arithmetic over the units cast, the rule and the whole vote. Mirrors
+-- SyncVotes.Tally ownership.
+module SyncVotes.Concordia.Tally where
+
+import DA.List (elemIndex, sortBy)
+import DA.Optional (fromSome)
+import SyncVotes.Concordia.Types
+
+data Counts = Counts with
+    yes : Int
+    no : Int
+    abstain : Int
+    tallies : [Int]
+    picked : Int
+  deriving (Eq, Show)
+
+add : Int -> Vote -> Counts -> Counts
+add weight vote c = case vote of
+  Yes -> c with yes = c.yes + weight
+  No -> c with no = c.no + weight
+  Abstain -> c with abstain = c.abstain + weight
+  Pick i -> c with tallies = bump [i]; picked = c.picked + weight
+  PickMany is -> c with tallies = bump is; picked = c.picked + weight
+  where
+    bump is = zipWith (\j t -> if j `elem` is then t + weight else t)
+      [0 .. length c.tallies - 1] c.tallies
+
+meets : Threshold -> Int -> Int -> Bool
+meets threshold yes denom = denom > 0 && case threshold of
+  Majority -> yes * 2 > denom
+  Percent p -> yes * 100 >= denom * p
+  Fraction num den -> yes * den >= denom * num
+
+-- Concordia Count.shareOfTotal counts only Some votes; SyncVotes quorum counts
+-- abstentions too. shareOfVotes uses a single option and cannot express multi-pick
+-- denominators, OfAll, or irreversible early decisions. Keep this arithmetic local.
+decide : Rule -> Effect -> Int -> Counts -> Bool -> Optional Outcome
+decide rule action eligible c over =
+  let (isChoice, several) = case action of
+        Choose _ s -> (True, s)
+        _ -> (False, False)
+      cast = c.yes + c.no + c.abstain + c.picked
+      outstanding = eligible - cast
+      quorumMet = rule.quorum == 0 || cast * 100 >= rule.quorum * eligible
+      at = meets rule.threshold
+      lead = if isChoice then foldl max 0 c.tallies else c.yes
+      second = case (isChoice, sortBy (\p q -> compare q p) c.tallies) of
+        (True, _ :: s :: _) -> s
+        _ -> 0
+      rest = if isChoice then sum c.tallies - lead else c.no
+      (denomNow, denomWorst) = case rule.basis of
+        OfAll -> (eligible, eligible)
+        OfCast -> (lead + rest, lead + rest + outstanding)
+      passedNow = quorumMet && at lead denomNow && (not isChoice || lead > second)
+      sure = quorumMet && at lead denomWorst && (not isChoice || lead - second > outstanding)
+      lost = not (at (lead + outstanding) denomWorst)
+      won = if isChoice then Chosen (fromSome (elemIndex lead c.tallies)) else Passed
+      (manyNow, manyWorst) = case rule.basis of
+        OfAll -> (eligible, eligible)
+        OfCast -> (c.picked, c.picked + outstanding)
+      reached = [i | (i, t) <- zip [0 .. length c.tallies - 1] c.tallies,
+        quorumMet && at t manyNow]
+      settled = all (\t -> (quorumMet && at t manyWorst)
+        || not (at (t + outstanding) manyWorst)) c.tallies
+      wonMany = if null reached then Failed else ChosenMany reached
+  in if several
+      then if (rule.early && settled) || over then Some wonMany else None
+      else if rule.early && sure then Some won
+      else if rule.early && lost then Some Failed
+      else if over then Some (if passedNow then won else Failed)
+      else None

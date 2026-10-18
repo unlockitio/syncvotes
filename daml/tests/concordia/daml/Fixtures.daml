@@ -19,6 +19,7 @@ import SyncVotes.Concordia.Keys (daoKey, targetKey, memberKey)
 import SyncVotes.Concordia.Target (Target (..))
 import SyncVotes.Concordia.Member (Member (..))
 import SyncVotes.Concordia.Round (Round (..), Member_Cast (..), Proposal_Tally (..), Ballot (..))
+import qualified SyncVotes.Concordia.Rules as R
 import qualified SyncVotes.Concordia.Types as V
 
 -- | The ledger refused the operation, for the reason the script expected. A
@@ -85,7 +86,7 @@ open effect rule = do
     createCmd ProposalAction with
       creator; provider
       -- A DAO change names the DAO; anything else names its Target.
-      targetLabel = if V.changesDao effect then "round" else "dao"
+      targetLabel = if R.changesDao effect then "round" else "dao"
       effect; viewers = voters
   round <- submit creator do
     exerciseCmd dao DAO_Open with

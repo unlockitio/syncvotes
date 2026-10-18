@@ -1,5 +1,6 @@
 -- SPDX-License-Identifier: MIT
--- Parity seam: original SyncVotes.Types/Rules/Tally -> SyncVotes.Concordia.Types pure functions.
+-- Parity seam: original SyncVotes.Types/Rules/Tally -> the matching
+-- SyncVotes.Concordia.Types/Rules/Tally pure functions.
 -- Shapes: Vote Yes/No/Abstain/Pick/PickMany; Outcome Passed/Failed/Chosen/
 -- ChosenMany; Effect Signal/Choose/SetShares/SetInfo/SetRules/SetPublic/
 -- Dissolve/SetSettings; Basis, Threshold, Rule, Settings are represented here.
@@ -20,6 +21,8 @@
 module Parity where
 
 import Daml.Script
+import SyncVotes.Concordia.Rules
+import SyncVotes.Concordia.Tally
 import SyncVotes.Concordia.Types
 
 empty : Counts

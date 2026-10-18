@@ -20,6 +20,8 @@ import Cap.Governance.Utils
 import SyncVotes.Concordia.Keys
 import SyncVotes.Concordia.Member (Member (..))
 import SyncVotes.Concordia.Target (carries)
+import qualified SyncVotes.Concordia.Rules as R
+import qualified SyncVotes.Concordia.Tally as Y
 import qualified SyncVotes.Concordia.Types as V
 
 -- A decision encoded as the value passed through Concordia's Action interface.
@@ -89,9 +91,9 @@ template Round
   where
     signatory creator
     observer provider :: Set.toList voters
-    ensure V.validRule rule && Set.size voters > 0 && eligible > 0
+    ensure R.validRule rule && Set.size voters > 0 && eligible > 0
       && case effect of
-        V.Choose options _ -> V.validOptions options
+        V.Choose options _ -> R.validOptions options
         _ -> True
 
     choice Member_Cast : (ContractId Round, ContractId Ballot)
@@ -169,12 +171,12 @@ template Round
         casts <- weighBallots Some weights presented
         require "ballot share matches the registered weight"
           (all (\(_, b) -> Map.lookup b.voter weights == Some (intToDecimal b.share)) presented)
-        let initial = V.Counts with
+        let initial = Y.Counts with
               yes = 0; no = 0; abstain = 0
               tallies = case effect of V.Choose options _ -> map (const 0) options; _ -> []
               picked = 0
-            counts = foldl (\c (_, b) -> V.add b.share b.vote c) initial presented
-            outcome = V.decide rule effect eligible counts (now >= closesAt)
+            counts = foldl (\c (_, b) -> Y.add b.share b.vote c) initial presented
+            outcome = Y.decide rule effect eligible counts (now >= closesAt)
         decided <- orAbort "the round is not settled yet" outcome
         consumeBallots presented
         if not (carries effect (asValue decided))

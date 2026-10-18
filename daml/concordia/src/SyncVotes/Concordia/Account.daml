@@ -5,6 +5,7 @@ module SyncVotes.Concordia.Account where
 import Splice.Util (require)
 import SyncVotes.Concordia.Governance (DAO (..))
 import SyncVotes.Concordia.Member (Member (..))
+import qualified SyncVotes.Concordia.Rules as R
 import qualified SyncVotes.Concordia.Types as V
 
 -- Founding requires a positive member table and carries provider authority.
@@ -28,10 +29,10 @@ template Account
         shares : [(Party, Int)]
       controller user
       do
-        require "valid founding information" (V.validInfo name description image)
-        require "valid founding settings" (V.validSettings rules && V.validSettings decisions)
-        require "valid founding shares" (V.validChanges equal shares
-          && length shares <= V.batch && all (\(_, units) -> units > 0) shares
+        require "valid founding information" (R.validInfo name description image)
+        require "valid founding settings" (R.validSettings rules && R.validSettings decisions)
+        require "valid founding shares" (R.validChanges equal shares
+          && length shares <= R.batch && all (\(_, units) -> units > 0) shares
           && user `elem` map fst shares)
         now <- getTime
         forA shares (\(party, share) -> create Member with
