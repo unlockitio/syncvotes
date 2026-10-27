@@ -25,6 +25,7 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
 # Daml
+/.daml/
 daml/.daml
 daml/syncvotes/.daml
 daml/tests/syncvotes/.daml
